@@ -7,6 +7,9 @@ from pathlib import Path
 import yaml
 from mcp.server.fastmcp import FastMCP
 
+from mcp_brain.auth import PermissionDenied
+from mcp_brain.tools._perms import ALL, allowed_subscopes, require
+
 
 def register_briefing_tools(mcp: FastMCP, knowledge_dir: Path):
 
@@ -19,6 +22,12 @@ def register_briefing_tools(mcp: FastMCP, knowledge_dir: Path):
         Args:
             scope: Optional — 'work', 'school', 'homelab'. If omitted, returns meta + overview.
         """
+        if scope is not None:
+            try:
+                require(f"briefing:{scope}")
+            except PermissionDenied as e:
+                return str(e)
+
         meta_path = knowledge_dir / "meta.yaml"
         if not meta_path.exists():
             return "No meta.yaml found. Create one in the knowledge directory."
@@ -26,7 +35,7 @@ def register_briefing_tools(mcp: FastMCP, knowledge_dir: Path):
         meta = yaml.safe_load(meta_path.read_text(encoding="utf-8"))
         parts: list[str] = []
 
-        # Always include core identity
+        # Always include core identity (preamble is shared across all tokens)
         user = meta.get("user", {})
         parts.append(f"# Briefing for {user.get('name', 'User')}")
         parts.append(f"Timezone: {user.get('timezone', 'unknown')}")
@@ -40,8 +49,13 @@ def register_briefing_tools(mcp: FastMCP, knowledge_dir: Path):
             parts.extend(pref_lines)
             parts.append("")
 
-        # Scope-specific or all
-        scopes = [scope] if scope else list(meta.get("projects", {}).keys())
+        # Scope-specific or all (filtered by token's briefing:* permissions)
+        all_scopes = list(meta.get("projects", {}).keys())
+        if scope is not None:
+            scopes = [scope]
+        else:
+            allowed = allowed_subscopes("briefing")
+            scopes = [s for s in all_scopes if allowed is ALL or s in allowed]
 
         for s in scopes:
             proj_meta = meta.get("projects", {}).get(s, {})
