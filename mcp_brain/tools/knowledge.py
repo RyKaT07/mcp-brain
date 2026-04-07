@@ -13,7 +13,6 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import PermissionDenied
-from mcp_brain.i18n import t
 from mcp_brain.tools._perms import ALL, allowed_subscopes, require
 
 
@@ -81,11 +80,11 @@ def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
         try:
             require(f"knowledge:read:{scope}")
         except PermissionDenied as e:
-            return t("permission_denied", scope=e.required)
+            return str(e)
 
         filepath = _resolve_file(knowledge_dir, scope, project)
         if not filepath.exists():
-            return t("no_knowledge_file", scope=scope, project=project)
+            return f"No knowledge file found: {scope}/{project}"
 
         content = filepath.read_text(encoding="utf-8")
 
@@ -95,8 +94,7 @@ def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
         sections = _parse_sections(content)
         if section in sections:
             return f"## {section}\n{sections[section]}"
-        available = ", ".join(s for s in sections if s != "_preamble")
-        return t("section_not_found", section=section, available=available)
+        return f"Section '{section}' not found. Available: {', '.join(s for s in sections if s != '_preamble')}"
 
     @mcp.tool()
     def knowledge_update(scope: str, project: str, section: str, content: str) -> str:
@@ -114,7 +112,7 @@ def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
         try:
             require(f"knowledge:write:{scope}")
         except PermissionDenied as e:
-            return t("permission_denied", scope=e.required)
+            return str(e)
 
         filepath = _resolve_file(knowledge_dir, scope, project)
         filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +139,7 @@ def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
 
                 _git_commit(knowledge_dir, filepath, f"update {scope}/{project} § {section}")
 
-                return t("knowledge_updated", scope=scope, project=project, section=section)
+                return f"Updated {scope}/{project} § {section}"
             finally:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
@@ -156,7 +154,7 @@ def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
             try:
                 require(f"knowledge:read:{scope}")
             except PermissionDenied as e:
-                return t("permission_denied", scope=e.required)
+                return str(e)
             search_dirs = [knowledge_dir / scope]
         else:
             allowed = allowed_subscopes("knowledge:read")
@@ -175,4 +173,4 @@ def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
             for f in sorted(d.glob("*.md")):
                 results.append(f"{d.name}/{f.stem}")
 
-        return "\n".join(results) if results else t("no_knowledge_files")
+        return "\n".join(results) if results else "No knowledge files found."
