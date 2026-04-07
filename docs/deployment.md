@@ -1,62 +1,62 @@
 # Deployment — Proxmox LXC
 
-Krok po kroku jak postawić mcp-brain w LXC na Proxmoxie i wystawić go przez Caddy + DDNS. Zajmuje to ~10 minut na świeżym kontenerze.
+Step by step on how to set up mcp-brain in a Proxmox LXC and expose it via Caddy + DDNS. Takes ~10 minutes on a fresh container.
 
-## TL;DR (jeśli już wiesz co robić)
+## TL;DR (if you already know what you are doing)
 
 ```bash
-# wewnątrz świeżego Debian 12 LXC, jako root:
+# inside a fresh Debian 12 LXC, as root:
 bash <(curl -fsSL https://raw.githubusercontent.com/CHANGEME/mcp-brain/main/scripts/install.sh)
 ```
 
-Skrypt zainstaluje Dockera, ściągnie obraz z GHCR, wygeneruje token i wystartuje serwer na `127.0.0.1:8400`. Reverse proxy (Caddy) zostawiamy tobie — patrz sekcja niżej.
+The script installs Docker, pulls the image from GHCR, generates a token, and starts the server on `127.0.0.1:8400`. The reverse proxy (Caddy) is left to you — see the section below.
 
 ---
 
-## 1. Stwórz LXC w Proxmoxie
+## 1. Create the LXC in Proxmox
 
-W Proxmox UI → `Create CT`:
+In Proxmox UI → `Create CT`:
 
-| Pole              | Wartość                                                |
+| Field             | Value                                                  |
 |-------------------|--------------------------------------------------------|
 | Hostname          | `mcp-brain`                                            |
-| Template          | `debian-12-standard` (Debian 12 / Ubuntu 24.04 też OK) |
+| Template          | `debian-12-standard` (Debian 12 / Ubuntu 24.04 also OK)|
 | Disk              | 8 GB                                                   |
 | CPU cores         | 1                                                      |
-| RAM               | 512 MB (768 MB jeśli chcesz zapas)                     |
-| Network           | DHCP albo statyczny w twojej VLAN                      |
-| Unprivileged      | ✅ tak                                                  |
-| Nesting / keyctl  | ✅ tak (Options → Features) — wymagane przez Dockera   |
+| RAM               | 512 MB (768 MB if you want headroom)                   |
+| Network           | DHCP or a static IP in your VLAN                       |
+| Unprivileged      | yes                                                    |
+| Nesting / keyctl  | yes (Options → Features) — required by Docker         |
 
-Po starcie zrób `pct enter <id>` lub SSH do kontenera.
+After it boots, `pct enter <id>` or SSH into the container.
 
-## 2. Odpal installer
+## 2. Run the installer
 
-Wewnątrz LXC, jako root:
+Inside the LXC, as root:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/CHANGEME/mcp-brain/main/scripts/install.sh)
 ```
 
-Co robi skrypt:
+What the script does:
 
-1. `apt install` brakujących pakietów (curl, openssl, xxd, ca-certificates)
-2. Instaluje Dockera przez `https://get.docker.com` jeśli nie ma
-3. Tworzy `/opt/mcp-brain/{,data,data/knowledge}`
-4. Pobiera `docker-compose.yml` z repo i pinuje image tag
-5. Generuje `tok_<32 hex>` i zapisuje do `/opt/mcp-brain/data/auth.yaml` (chmod 600)
-6. `git init` w `data/knowledge` (do auto-commit history)
+1. `apt install` for missing packages (curl, openssl, xxd, ca-certificates)
+2. Installs Docker via `https://get.docker.com` if it is not already there
+3. Creates `/opt/mcp-brain/{,data,data/knowledge}`
+4. Downloads `docker-compose.yml` from the repo and pins the image tag
+5. Generates `tok_<32 hex>` and writes it into `/opt/mcp-brain/data/auth.yaml` (chmod 600)
+6. `git init` inside `data/knowledge` (for auto-commit history)
 7. `docker compose pull && up -d`
-8. Sprawdza `curl http://127.0.0.1:8400/healthz`
-9. **Wypisuje token raz na ekran** — zapisz go w 1Password od razu
+8. Probes `curl http://127.0.0.1:8400/healthz`
+9. **Prints the token to the screen once** — save it to your password manager immediately
 
-Po skończeniu serwer słucha na `127.0.0.1:8400`. Nie jest jeszcze wystawiony na świat.
+When it finishes, the server listens on `127.0.0.1:8400`. It is not yet exposed to the world.
 
 ## 3. Reverse proxy (Caddy)
 
-Zalecane: osobny LXC "edge" z Caddy, który obsługuje wszystkie twoje self-hosted serwisy. Albo Caddy w tym samym kontenerze co mcp-brain — twój wybór.
+Recommended: a separate "edge" LXC running Caddy that fronts all your self-hosted services. Or run Caddy in the same container as mcp-brain — your call.
 
-Minimalny `Caddyfile`:
+Minimal `Caddyfile`:
 
 ```caddyfile
 mcp.yourdomain.tld {
@@ -64,21 +64,21 @@ mcp.yourdomain.tld {
 }
 ```
 
-Caddy automatycznie ogarnie Let's Encrypt jeśli DNS wskazuje na twój publiczny IP. **Bearer token sprawdza sam mcp-brain**, więc Caddy nie musi nic dodatkowo robić.
+Caddy handles Let's Encrypt automatically as long as DNS points at your public IP. **The bearer token is checked by mcp-brain itself**, so Caddy does not need to do anything extra.
 
-Pełniejszy przykład w [`Caddyfile.example`](Caddyfile.example).
+A fuller example lives in [`Caddyfile.example`](Caddyfile.example).
 
 ## 4. OPNsense — port forward
 
-W OPNsense:
+In OPNsense:
 
-1. **Firewall → NAT → Port Forward**: redirect WAN:443 → IP twojego Caddy LXC:443
-2. **Firewall → Rules → WAN**: pozwól na 443/tcp z any (LE i klienty)
-3. **Services → Dynamic DNS**: skonfiguruj DDNS na swoją domenę
+1. **Firewall → NAT → Port Forward**: redirect WAN:443 → your Caddy LXC IP:443
+2. **Firewall → Rules → WAN**: allow 443/tcp from any (Let's Encrypt and clients)
+3. **Services → Dynamic DNS**: configure DDNS for your domain
 
-## 5. Podłącz Claude Code
+## 5. Connect Claude Code
 
-Edytuj `~/.claude.json` (albo project-level `.claude.json`):
+Edit `~/.claude.json` (or a project-level `.claude.json`):
 
 ```json
 {
@@ -87,14 +87,14 @@ Edytuj `~/.claude.json` (albo project-level `.claude.json`):
       "type": "sse",
       "url": "https://mcp.yourdomain.tld/sse",
       "headers": {
-        "Authorization": "Bearer tok_TWOJ_TOKEN"
+        "Authorization": "Bearer tok_YOUR_TOKEN"
       }
     }
   }
 }
 ```
 
-Restart Claude Code i tooli `knowledge_*`, `inbox_*`, `get_briefing`, `secrets_schema` powinny być dostępne.
+Restart Claude Code and the `knowledge_*`, `inbox_*`, `get_briefing`, `secrets_schema` tools should be available.
 
 ## 6. Update
 
@@ -102,39 +102,39 @@ Restart Claude Code i tooli `knowledge_*`, `inbox_*`, `get_briefing`, `secrets_s
 sudo bash /opt/mcp-brain/scripts/install.sh update
 ```
 
-Albo (jeśli zrobiłeś symlinka):
+Or, if you symlinked it:
 
 ```bash
 sudo mcp-brain-update
 ```
 
-To po prostu `docker compose pull && up -d`. Trwa ~10 sekund. Patrz [`upgrade.md`](upgrade.md) jeśli kiedyś release notes wspomną o breaking changes.
+That is just `docker compose pull && up -d`. Takes ~10 seconds. See [`upgrade.md`](upgrade.md) if release notes ever mention breaking changes.
 
 ## 7. Backup
 
-To co warto backupować z LXC:
+Worth backing up from the LXC:
 
-- `/opt/mcp-brain/data/knowledge/` — twoja KB (sam katalog + jego `.git`)
-- `/opt/mcp-brain/data/auth.yaml` — tokeny (lub po prostu trzymaj je w 1Password)
+- `/opt/mcp-brain/data/knowledge/` — your KB (the directory plus its `.git`)
+- `/opt/mcp-brain/data/auth.yaml` — tokens (or just keep them in 1Password)
 
-`docker-compose.yml` i obraz są reproducible z repo.
+`docker-compose.yml` and the image are reproducible from the repo.
 
-Najprościej: snapshot LXC w Proxmoxie raz na tydzień + cron `restic backup /opt/mcp-brain/data/knowledge`.
+Easiest: an LXC snapshot in Proxmox once a week + a cron `restic backup /opt/mcp-brain/data/knowledge`.
 
 ## Troubleshooting
 
-**`/healthz` zwraca 200 ale `/sse` daje 401 z prawidłowym tokenem**
-Sprawdź `Authorization: Bearer ` (z spacją), nie `Bearer:`. I że token w nagłówku == token w `auth.yaml` (literalnie, bez cudzysłowów).
+**`/healthz` returns 200 but `/sse` returns 401 with a valid token**
+Check that the header is `Authorization: Bearer ` (with a space), not `Bearer:`. And that the token in the header is literally identical to the token in `auth.yaml`, no quotes.
 
-**Docker startuje ale nie działa w LXC (cgroup error)**
-Włącz `Nesting` w opcjach kontenera (Proxmox → CT → Options → Features). Restart LXC.
+**Docker starts but does not work in the LXC (cgroup error)**
+Enable `Nesting` in container options (Proxmox → CT → Options → Features). Restart the LXC.
 
-**Knowledge nie commituje się**
-Sprawdź że `data/knowledge/.git` istnieje i jest własnością UID 1000:
+**Knowledge does not auto-commit**
+Check that `data/knowledge/.git` exists and is owned by UID 1000:
 ```bash
 ls -la /opt/mcp-brain/data/knowledge/.git
 chown -R 1000:1000 /opt/mcp-brain/data/knowledge
 ```
 
-**Dodanie nowego tokena nie działa**
-Po edycji `data/auth.yaml`: `cd /opt/mcp-brain && docker compose restart`. Brak hot-reloadu (świadomie — single-user, restart jest tani).
+**Adding a new token does not take effect**
+After editing `data/auth.yaml`: `cd /opt/mcp-brain && docker compose restart`. There is no hot-reload (deliberately — single user, restart is cheap).
