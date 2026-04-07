@@ -8,6 +8,7 @@ import yaml
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import PermissionDenied
+from mcp_brain.i18n import t
 from mcp_brain.tools._perms import ALL, allowed_subscopes, require
 
 
@@ -26,26 +27,26 @@ def register_briefing_tools(mcp: FastMCP, knowledge_dir: Path):
             try:
                 require(f"briefing:{scope}")
             except PermissionDenied as e:
-                return str(e)
+                return t("permission_denied", scope=e.required)
 
         meta_path = knowledge_dir / "meta.yaml"
         if not meta_path.exists():
-            return "No meta.yaml found. Create one in the knowledge directory."
+            return t("briefing_no_meta")
 
         meta = yaml.safe_load(meta_path.read_text(encoding="utf-8"))
         parts: list[str] = []
 
         # Always include core identity (preamble is shared across all tokens)
         user = meta.get("user", {})
-        parts.append(f"# Briefing for {user.get('name', 'User')}")
-        parts.append(f"Timezone: {user.get('timezone', 'unknown')}")
+        parts.append(f"# {t('briefing_title', name=user.get('name', 'User'))}")
+        parts.append(t("briefing_timezone", tz=user.get("timezone", "unknown")))
         parts.append("")
 
         # Preferences
         prefs = meta.get("preferences", {})
         if prefs:
             pref_lines = [f"- {k}: {v}" for k, v in prefs.items()]
-            parts.append("## Preferences")
+            parts.append(f"## {t('briefing_preferences_header')}")
             parts.extend(pref_lines)
             parts.append("")
 
@@ -70,7 +71,7 @@ def register_briefing_tools(mcp: FastMCP, knowledge_dir: Path):
             if scope_dir.exists():
                 files = sorted(scope_dir.glob("*.md"))
                 if files:
-                    parts.append(f"### Available knowledge files ({s}/)")
+                    parts.append(f"### {t('briefing_files_for_scope', scope=s)}")
                     for f in files:
                         parts.append(f"- {f.stem}")
                     parts.append("")
