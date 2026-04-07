@@ -15,7 +15,7 @@ set -euo pipefail
 
 # Configuration — override via env if needed.
 INSTALL_DIR="${MCP_BRAIN_INSTALL_DIR:-/opt/mcp-brain}"
-GITHUB_REPO="${MCP_BRAIN_REPO:-CHANGEME/mcp-brain}"
+GITHUB_REPO="${MCP_BRAIN_REPO:-RyKaT07/mcp-brain}"
 GITHUB_BRANCH="${MCP_BRAIN_BRANCH:-main}"
 IMAGE="${MCP_BRAIN_IMAGE:-ghcr.io/${GITHUB_REPO}:latest}"
 RAW_BASE="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}"
@@ -94,7 +94,7 @@ write_compose() {
         fail "could not download docker-compose.yml — check MCP_BRAIN_REPO"
     fi
     # Pin the image to whatever this installer was built against
-    sed -i "s|image: \${MCP_BRAIN_IMAGE:-ghcr.io/CHANGEME/mcp-brain:latest}|image: ${IMAGE}|" "${dest}.tmp"
+    sed -i "s|image: \${MCP_BRAIN_IMAGE:-ghcr.io/RyKaT07/mcp-brain:latest}|image: ${IMAGE}|" "${dest}.tmp"
     mv "${dest}.tmp" "${dest}"
 }
 

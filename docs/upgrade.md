@@ -30,17 +30,17 @@ By default `docker-compose.yml` pulls the `latest` tag from GHCR — i.e. the la
 ```yaml
 services:
   mcp-brain:
-    image: ghcr.io/CHANGEME/mcp-brain:v0.2.0
+    image: ghcr.io/RyKaT07/mcp-brain:v0.2.0
 ```
 
-Semver tags are published when git tags `v*.*.*` are pushed. List: https://github.com/CHANGEME/mcp-brain/pkgs/container/mcp-brain
+Semver tags are published when git tags `v*.*.*` are pushed. List: https://github.com/RyKaT07/mcp-brain/pkgs/container/mcp-brain
 
 ## Rollback
 
 ```bash
 cd /opt/mcp-brain
 # find the previous image
-docker images ghcr.io/CHANGEME/mcp-brain --format '{{.Tag}}\t{{.CreatedAt}}'
+docker images ghcr.io/RyKaT07/mcp-brain --format '{{.Tag}}\t{{.CreatedAt}}'
 # pin it in compose and restart
 sed -i 's|mcp-brain:latest|mcp-brain:sha-abc1234|' docker-compose.yml
 docker compose up -d
@@ -75,7 +75,7 @@ In MVP the `auth.yaml` schema is frozen. Any change will be flagged as a semver 
 The `install.sh` script lives at `/opt/mcp-brain/scripts/install.sh` after the first install — that is a copy from the moment of install. To pull a newer version:
 
 ```bash
-sudo curl -fsSL https://raw.githubusercontent.com/CHANGEME/mcp-brain/main/scripts/install.sh \
+sudo curl -fsSL https://raw.githubusercontent.com/RyKaT07/mcp-brain/main/scripts/install.sh \
   -o /opt/mcp-brain/scripts/install.sh
 sudo chmod +x /opt/mcp-brain/scripts/install.sh
 ```

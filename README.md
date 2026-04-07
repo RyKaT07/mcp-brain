@@ -16,13 +16,13 @@ Personal MCP server for persistent AI memory across sessions. Multi-token bearer
 ```bash
 # 1. Create a Debian 12 LXC in Proxmox (1 vCPU, 512MB RAM, 8GB disk, unprivileged + nesting)
 # 2. SSH in or pct enter, then as root:
-bash <(curl -fsSL https://raw.githubusercontent.com/CHANGEME/mcp-brain/main/scripts/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/RyKaT07/mcp-brain/main/scripts/install.sh)
 ```
 
 The installer:
 
 - installs Docker
-- pulls `ghcr.io/CHANGEME/mcp-brain:latest`
+- pulls `ghcr.io/RyKaT07/mcp-brain:latest`
 - generates the first admin token (`tok_<32 hex>`) and prints it once
 - starts the server on `127.0.0.1:8400`
 - initializes a `git` repo inside `data/knowledge` (for auto-commit history)
@@ -116,7 +116,7 @@ mcp-brain (FastMCP, SSE, multi-token bearer auth)
 ## Development (local, without Docker)
 
 ```bash
-git clone https://github.com/CHANGEME/mcp-brain.git
+git clone https://github.com/RyKaT07/mcp-brain.git
 cd mcp-brain
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e .
@@ -143,4 +143,16 @@ Everything beyond MVP waits for separate PRs — see `CLAUDE.md` and `docs/`.
 
 ## License
 
-Personal project, no formal license. Use at your own risk; PRs welcome if anyone finds it useful.
+Licensed under [PolyForm Noncommercial 1.0.0](LICENSE). In plain terms:
+
+- ✅ Personal use, hobby projects, research, education
+- ✅ Non-profits, educational institutions, government
+- ✅ Reading, studying, forking for your own non-commercial use
+- ❌ Production use inside a for-profit company or commercial product
+- ❌ Bundling into a paid service without a commercial license
+
+If you or your company want to use mcp-brain commercially, open an issue
+and we can talk about a commercial license. See [CONTRIBUTING.md](CONTRIBUTING.md)
+for how pull requests are handled.
+
+Use at your own risk — no warranty of any kind.
