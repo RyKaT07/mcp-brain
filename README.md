@@ -11,23 +11,30 @@ Personal MCP server for persistent AI memory across sessions. Multi-token bearer
 - **Multi-token auth** — different tokens grant different permissions (full / school-only / homelab read-only / etc.)
 - **SSE over HTTPS** — works remotely, one Bearer header in the client's MCP config
 
-## Quick start (Proxmox LXC)
+## Quick start (Proxmox VE host)
+
+One command on the Proxmox host shell:
 
 ```bash
-# 1. Create a Debian 12 LXC in Proxmox (1 vCPU, 512MB RAM, 8GB disk, unprivileged + nesting)
-# 2. SSH in or pct enter, then as root:
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/RyKaT07/mcp-brain/main/scripts/proxmox-install.sh)"
+```
+
+This creates a fresh unprivileged Debian LXC with nesting+keyctl enabled (required for Docker), then runs the in-container installer via `pct exec`. End result: a running mcp-brain on `127.0.0.1:8400` inside a new LXC, plus a printed admin bearer token and the LXC root password.
+
+Override any default with env vars:
+
+```bash
+CTID=150 HOSTNAME=brain RAM_MB=2048 DISK_GB=16 \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/RyKaT07/mcp-brain/main/scripts/proxmox-install.sh)"
+```
+
+If you already have a Debian/Ubuntu LXC or VM (or any Debian box, really), you can skip the wrapper and run the in-container installer directly:
+
+```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/RyKaT07/mcp-brain/main/scripts/install.sh)
 ```
 
-The installer:
-
-- installs Docker
-- pulls `ghcr.io/RyKaT07/mcp-brain:latest`
-- generates the first admin token (`tok_<32 hex>`) and prints it once
-- starts the server on `127.0.0.1:8400`
-- initializes a `git` repo inside `data/knowledge` (for auto-commit history)
-
-After that, put Caddy/Traefik/nginx with TLS in front of port 8400. Full walkthrough: [`docs/deployment.md`](docs/deployment.md).
+After either path, put Caddy/Traefik/nginx with TLS in front of port 8400. Full walkthrough: [`docs/deployment.md`](docs/deployment.md).
 
 ## Update
 
