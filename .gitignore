@@ -1,0 +1,25 @@
+# Knowledge data (personal, not in repo)
+knowledge/work/
+knowledge/school/
+knowledge/homelab/
+knowledge/inbox/
+knowledge/meta.yaml
+
+# Keep directory structure
+!knowledge/*/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Config with secrets
+.env
+config.yaml
+
+# Lock files from knowledge writes
+*.lock
+
+# OS
+.DS_Store

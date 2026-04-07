@@ -1,0 +1,51 @@
+# meta.yaml — personal context for AI agents
+# Copy to knowledge/meta.yaml and fill in your details.
+
+user:
+  name: Your Name
+  lang: pl
+  timezone: Europe/Warsaw
+
+preferences:
+  code_style: "explicit types, no magic"
+  commit_messages: conventional-commits
+  docs_language: "pl (reports), en (code/comments)"
+
+projects:
+  work:
+    repos:
+      - rtm-energy-connect
+      - rtm-edge-device
+      - rtm-device-api
+      - amrd-deployments
+      - sima-k8s
+      - device-monitor
+    infra: OVH k8s + docker-compose
+    notes: "MCP knows structure, does not deploy"
+
+  school:
+    courses:
+      - power-electronics
+      - robotics
+      - digital-control
+      - rtos
+    current_semester: true
+
+  homelab:
+    host: proxmox-supermicro
+    services:
+      - jellyfin
+      - immich
+      - arr-stack
+      - mcp-brain
+
+secrets_schema:
+  ovh:
+    keys: [OVH_API_KEY, OVH_SECRET, KUBECONFIG_PATH]
+    location: "1Password / vault: Work"
+  homelab:
+    keys: [PROXMOX_TOKEN, DDNS_TOKEN]
+    location: "1Password / vault: Homelab"
+  todoist:
+    keys: [TODOIST_API_TOKEN]
+    location: ".env on mcp-brain LXC"
