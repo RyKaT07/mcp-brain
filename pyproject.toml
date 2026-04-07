@@ -22,3 +22,11 @@ integrations = [
 
 [project.scripts]
 mcp-brain = "mcp_brain.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["mcp_brain*"]
+exclude = ["knowledge*", "docs*"]

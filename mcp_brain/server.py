@@ -12,11 +12,14 @@ from mcp_brain.tools.briefing import register_briefing_tools
 from mcp_brain.tools.secrets_schema import register_secrets_tools
 
 KNOWLEDGE_DIR = Path(os.getenv("MCP_KNOWLEDGE_DIR", "./knowledge"))
+HOST = os.getenv("MCP_HOST", "0.0.0.0")
+PORT = int(os.getenv("MCP_PORT", "8400"))
 
 mcp = FastMCP(
     "mcp-brain",
-    version="0.1.0",
-    description="Personal knowledge base and productivity MCP server",
+    instructions="Personal knowledge base and productivity MCP server.",
+    host=HOST,
+    port=PORT,
 )
 
 # Register all tool groups
@@ -27,15 +30,9 @@ register_secrets_tools(mcp, KNOWLEDGE_DIR)
 
 
 def main():
-    """Run the MCP server with SSE transport for remote access."""
+    """Run the MCP server. Default transport is SSE for remote access."""
     transport = os.getenv("MCP_TRANSPORT", "sse")
-    host = os.getenv("MCP_HOST", "0.0.0.0")
-    port = int(os.getenv("MCP_PORT", "8400"))
-
-    if transport == "stdio":
-        mcp.run(transport="stdio")
-    else:
-        mcp.run(transport="sse", host=host, port=port)
+    mcp.run(transport=transport)
 
 
 if __name__ == "__main__":
