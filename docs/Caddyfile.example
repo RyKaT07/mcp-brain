@@ -1,0 +1,10 @@
+# Caddyfile — place in /etc/caddy/Caddyfile on the LXC
+# Replace mcp.yourdomain.com with your DDNS hostname
+
+mcp.yourdomain.com {
+    reverse_proxy localhost:8400
+
+    # Optional: restrict by Bearer token at Caddy level
+    # @noauth not header Authorization "Bearer YOUR_TOKEN"
+    # respond @noauth 401
+}
