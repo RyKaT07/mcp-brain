@@ -12,6 +12,9 @@ from pathlib import Path
 import yaml
 from mcp.server.fastmcp import FastMCP
 
+from mcp_brain.auth import PermissionDenied
+from mcp_brain.tools._perms import require
+
 
 INBOX_DIR_NAME = "inbox"
 ARCHIVE_DIR_NAME = "inbox/_archive"
@@ -39,6 +42,11 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
             source: Optional filter by source (e.g. 'university_portal', 'discord')
             limit: Max items to return (default 20)
         """
+        try:
+            require("inbox:read")
+        except PermissionDenied as e:
+            return str(e)
+
         inbox = _inbox_dir(knowledge_dir)
         items = []
 
@@ -87,6 +95,11 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
             suggested_target: Suggested knowledge file (e.g. 'school/power-electronics')
             suggested_section: Suggested section within that file
         """
+        try:
+            require("inbox:write")
+        except PermissionDenied as e:
+            return str(e)
+
         inbox = _inbox_dir(knowledge_dir)
         item_id = uuid.uuid4().hex[:8]
         now = datetime.now(timezone.utc).isoformat()
@@ -114,6 +127,11 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
         Args:
             item_id: The item ID to accept
         """
+        try:
+            require("inbox:write")
+        except PermissionDenied as e:
+            return str(e)
+
         inbox = _inbox_dir(knowledge_dir)
         item_file, item_data = _find_item(inbox, item_id)
 
@@ -131,6 +149,13 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
             return f"Invalid target format: {item_data['suggested_target']}. Expected 'scope/project'."
 
         scope, project = target_parts
+
+        # Accepting writes to a knowledge file → also need write on that scope.
+        try:
+            require(f"knowledge:write:{scope}")
+        except PermissionDenied as e:
+            return str(e)
+
         section = item_data.get("suggested_section", "imported")
         filepath = _resolve_file(knowledge_dir, scope, project)
         filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -163,6 +188,11 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
         Args:
             item_id: The item ID to reject
         """
+        try:
+            require("inbox:write")
+        except PermissionDenied as e:
+            return str(e)
+
         inbox = _inbox_dir(knowledge_dir)
         item_file, item_data = _find_item(inbox, item_id)
 

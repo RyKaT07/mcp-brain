@@ -12,6 +12,9 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from mcp_brain.auth import PermissionDenied
+from mcp_brain.tools._perms import ALL, allowed_subscopes, require
+
 
 def _git_commit(knowledge_dir: Path, filepath: Path, message: str):
     """Auto-commit a knowledge file change."""
@@ -74,6 +77,11 @@ def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
             project: Project/topic name (filename without .md)
             section: Optional H2 section title. If omitted, returns full file.
         """
+        try:
+            require(f"knowledge:read:{scope}")
+        except PermissionDenied as e:
+            return str(e)
+
         filepath = _resolve_file(knowledge_dir, scope, project)
         if not filepath.exists():
             return f"No knowledge file found: {scope}/{project}"
@@ -101,6 +109,11 @@ def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
             section: H2 section title to update (e.g. 'architecture', 'current_tasks')
             content: New markdown content for that section (without the ## header)
         """
+        try:
+            require(f"knowledge:write:{scope}")
+        except PermissionDenied as e:
+            return str(e)
+
         filepath = _resolve_file(knowledge_dir, scope, project)
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
@@ -137,12 +150,23 @@ def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
         Args:
             scope: Optional filter — 'work', 'school', 'homelab'. If omitted, lists all.
         """
-        results: list[str] = []
-        search_dirs = (
-            [knowledge_dir / scope] if scope else
-            [d for d in knowledge_dir.iterdir() if d.is_dir() and d.name not in ("inbox", ".git")]
-        )
+        if scope is not None:
+            try:
+                require(f"knowledge:read:{scope}")
+            except PermissionDenied as e:
+                return str(e)
+            search_dirs = [knowledge_dir / scope]
+        else:
+            allowed = allowed_subscopes("knowledge:read")
+            search_dirs = [
+                d
+                for d in knowledge_dir.iterdir()
+                if d.is_dir()
+                and d.name not in ("inbox", ".git")
+                and (allowed is ALL or d.name in allowed)
+            ]
 
+        results: list[str] = []
         for d in search_dirs:
             if not d.exists():
                 continue

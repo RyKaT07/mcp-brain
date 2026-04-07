@@ -1,0 +1,57 @@
+# mcp-brain — bearer token configuration
+#
+# Generate a token value with:
+#   openssl rand -hex 32
+#
+# Then prefix it with "tok_" for clarity in logs/configs (optional).
+# Restart the server after editing — there's no hot-reload.
+#
+# Scope grammar
+# -------------
+#
+#   <resource>:<action>:<scope>      for knowledge (read/write distinction)
+#   <resource>:<scope>               for inbox / briefing / secrets_schema
+#
+# Wildcards `*` are accepted at any segment.
+# A bare `*` (single segment) is god-mode and matches every required scope.
+#
+# Resources and actions
+# ---------------------
+#
+#   knowledge:read:<scope>      knowledge_read, knowledge_list (filtered)
+#   knowledge:write:<scope>     knowledge_update, inbox_accept (target side)
+#   inbox:read                  inbox_list
+#   inbox:write                 inbox_add, inbox_accept, inbox_reject
+#   briefing:<scope>            get_briefing (filtered)
+#   secrets_schema:<scope>      secrets_schema (filtered)
+#
+# `<scope>` matches a directory under knowledge/ (e.g. work, school, homelab,
+# private, projekt-foo) for knowledge/briefing, or a top-level key under
+# `secrets_schema:` in meta.yaml for secrets_schema.
+
+tokens:
+  # Full access — your laptop running Claude Code or Cursor.
+  - id: claude-code-laptop
+    token: "tok_REPLACE_ME_with_openssl_rand_hex_32"
+    description: "Personal laptop, full access"
+    scopes: ["*"]
+
+  # School-only — Cursor session focused on coursework.
+  - id: cursor-school
+    token: "tok_REPLACE_ME_school"
+    description: "School read+write, no work or homelab"
+    scopes:
+      - knowledge:read:school
+      - knowledge:write:school
+      - inbox:read
+      - inbox:write
+      - briefing:school
+
+  # Read-only homelab — n8n / monitoring scripts.
+  - id: n8n-homelab-ro
+    token: "tok_REPLACE_ME_n8n"
+    description: "Homelab observability, read-only"
+    scopes:
+      - knowledge:read:homelab
+      - briefing:homelab
+      - secrets_schema:homelab
