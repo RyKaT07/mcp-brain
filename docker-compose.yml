@@ -11,7 +11,7 @@
 
 services:
   mcp-brain:
-    image: ${MCP_BRAIN_IMAGE:-ghcr.io/CHANGEME/mcp-brain:latest}
+    image: ${MCP_BRAIN_IMAGE:-ghcr.io/RyKaT07/mcp-brain:latest}
     container_name: mcp-brain
     restart: unless-stopped
     ports:

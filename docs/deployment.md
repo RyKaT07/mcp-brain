@@ -6,7 +6,7 @@ Step by step on how to set up mcp-brain in a Proxmox LXC and expose it via Caddy
 
 ```bash
 # inside a fresh Debian 12 LXC, as root:
-bash <(curl -fsSL https://raw.githubusercontent.com/CHANGEME/mcp-brain/main/scripts/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/RyKaT07/mcp-brain/main/scripts/install.sh)
 ```
 
 The script installs Docker, pulls the image from GHCR, generates a token, and starts the server on `127.0.0.1:8400`. The reverse proxy (Caddy) is left to you — see the section below.
@@ -35,7 +35,7 @@ After it boots, `pct enter <id>` or SSH into the container.
 Inside the LXC, as root:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/CHANGEME/mcp-brain/main/scripts/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/RyKaT07/mcp-brain/main/scripts/install.sh)
 ```
 
 What the script does:
