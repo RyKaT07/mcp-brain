@@ -16,6 +16,7 @@ from pathlib import Path
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 
+from mcp_brain import i18n
 from mcp_brain.auth import YamlTokenVerifier
 from mcp_brain.tools.briefing import register_briefing_tools
 from mcp_brain.tools.inbox import register_inbox_tools
@@ -28,6 +29,10 @@ HOST = os.getenv("MCP_HOST", "0.0.0.0")
 PORT = int(os.getenv("MCP_PORT", "8400"))
 PUBLIC_URL = os.getenv("MCP_PUBLIC_URL", f"http://localhost:{PORT}/")
 TRANSPORT = os.getenv("MCP_TRANSPORT", "sse")
+
+# Resolve runtime language for tool output. Reads MCP_LANG env, then
+# meta.yaml user.lang, defaults to English. Single-process scope.
+i18n.init(KNOWLEDGE_DIR)
 
 
 def _build_mcp() -> FastMCP:

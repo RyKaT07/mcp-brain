@@ -13,6 +13,7 @@ import yaml
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import PermissionDenied
+from mcp_brain.i18n import t
 from mcp_brain.tools._perms import require
 
 
@@ -45,7 +46,7 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
         try:
             require("inbox:read")
         except PermissionDenied as e:
-            return str(e)
+            return t("permission_denied", scope=e.required)
 
         inbox = _inbox_dir(knowledge_dir)
         items = []
@@ -68,7 +69,7 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
                 break
 
         if not items:
-            return "Inbox is empty."
+            return t("inbox_empty")
 
         lines = []
         for item in items:
@@ -98,7 +99,7 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
         try:
             require("inbox:write")
         except PermissionDenied as e:
-            return str(e)
+            return t("permission_denied", scope=e.required)
 
         inbox = _inbox_dir(knowledge_dir)
         item_id = uuid.uuid4().hex[:8]
@@ -118,7 +119,7 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
         filename = f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}_{item_id}.yaml"
         (inbox / filename).write_text(yaml.dump(item, allow_unicode=True), encoding="utf-8")
 
-        return f"Added to inbox: [{item_id}] {summary}"
+        return t("inbox_added", item_id=item_id, summary=summary)
 
     @mcp.tool()
     def inbox_accept(item_id: str) -> str:
@@ -130,23 +131,23 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
         try:
             require("inbox:write")
         except PermissionDenied as e:
-            return str(e)
+            return t("permission_denied", scope=e.required)
 
         inbox = _inbox_dir(knowledge_dir)
         item_file, item_data = _find_item(inbox, item_id)
 
         if not item_file:
-            return f"Item {item_id} not found."
+            return t("inbox_item_not_found", item_id=item_id)
 
         if not item_data.get("suggested_target"):
-            return f"Item {item_id} has no suggested_target. Update it first or merge manually."
+            return t("inbox_no_target", item_id=item_id)
 
         # Import here to avoid circular deps
         from mcp_brain.tools.knowledge import _resolve_file, _parse_sections, _rebuild_markdown, _git_commit
 
         target_parts = item_data["suggested_target"].split("/", 1)
         if len(target_parts) != 2:
-            return f"Invalid target format: {item_data['suggested_target']}. Expected 'scope/project'."
+            return t("inbox_invalid_target", target=item_data["suggested_target"])
 
         scope, project = target_parts
 
@@ -154,7 +155,7 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
         try:
             require(f"knowledge:write:{scope}")
         except PermissionDenied as e:
-            return str(e)
+            return t("permission_denied", scope=e.required)
 
         section = item_data.get("suggested_section", "imported")
         filepath = _resolve_file(knowledge_dir, scope, project)
@@ -179,7 +180,7 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
         archive = _archive_dir(knowledge_dir)
         item_file.rename(archive / item_file.name)
 
-        return f"Accepted [{item_id}] → {scope}/{project} § {section}"
+        return t("inbox_accepted", item_id=item_id, scope=scope, project=project, section=section)
 
     @mcp.tool()
     def inbox_reject(item_id: str) -> str:
@@ -191,20 +192,20 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
         try:
             require("inbox:write")
         except PermissionDenied as e:
-            return str(e)
+            return t("permission_denied", scope=e.required)
 
         inbox = _inbox_dir(knowledge_dir)
         item_file, item_data = _find_item(inbox, item_id)
 
         if not item_file:
-            return f"Item {item_id} not found."
+            return t("inbox_item_not_found", item_id=item_id)
 
         item_data["status"] = "rejected"
         item_file.write_text(yaml.dump(item_data, allow_unicode=True), encoding="utf-8")
         archive = _archive_dir(knowledge_dir)
         item_file.rename(archive / item_file.name)
 
-        return f"Rejected [{item_id}]"
+        return t("inbox_rejected", item_id=item_id)
 
 
 def _find_item(inbox: Path, item_id: str) -> tuple[Path | None, dict | None]:
