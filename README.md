@@ -91,6 +91,7 @@ After editing: `cd /opt/mcp-brain && docker compose restart`. Full scope grammar
 | `knowledge_update` | `knowledge:write:<scope>` |
 | `knowledge_list` | filtered by `knowledge:read:*` |
 | `inbox_list` | `inbox:read` |
+| `inbox_show` | `inbox:read` |
 | `inbox_add` | `inbox:write` |
 | `inbox_accept` | `inbox:write` + `knowledge:write:<target>` |
 | `inbox_reject` | `inbox:write` |

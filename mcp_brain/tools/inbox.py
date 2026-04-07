@@ -79,6 +79,44 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
         return "\n".join(lines)
 
     @mcp.tool()
+    def inbox_show(item_id: str) -> str:
+        """Show the full contents of an inbox item, including raw_snippet.
+
+        Use this before inbox_accept when you want the full original
+        context rather than just the one-line summary from inbox_list.
+        Looks in pending items first, then falls back to the archive so
+        you can also inspect previously accepted or rejected items.
+
+        Args:
+            item_id: The item ID to display
+        """
+        try:
+            require("inbox:read")
+        except PermissionDenied as e:
+            return str(e)
+
+        inbox = _inbox_dir(knowledge_dir)
+        item_file, item_data = _find_item(inbox, item_id)
+
+        if not item_file:
+            # Fall back to archive — accepted / rejected items stay
+            # readable so the user can audit past decisions.
+            archive = _archive_dir(knowledge_dir)
+            for f in archive.glob("*.yaml"):
+                try:
+                    data = yaml.safe_load(f.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if data and data.get("id") == item_id:
+                    item_file, item_data = f, data
+                    break
+
+        if not item_file:
+            return f"Item {item_id} not found."
+
+        return yaml.dump(item_data, allow_unicode=True, sort_keys=False)
+
+    @mcp.tool()
     def inbox_add(
         source: str,
         summary: str,

@@ -59,6 +59,7 @@ For resources where read/write distinction does not apply (inbox, briefing, secr
 | `knowledge_update`  | `knowledge:write:<scope>`                             |
 | `knowledge_list`    | filters down to `<scope>` values the token can read   |
 | `inbox_list`        | `inbox:read`                                          |
+| `inbox_show`        | `inbox:read` (also reads from `_archive/`)            |
 | `inbox_add`         | `inbox:write`                                         |
 | `inbox_accept`      | `inbox:write` AND `knowledge:write:<target_scope>`    |
 | `inbox_reject`      | `inbox:write`                                         |
