@@ -1,10 +1,10 @@
-# Auth — tokeny i scopes
+# Auth — tokens and scopes
 
-mcp-brain używa wielo-tokenowego bearer auth z per-token permission scopes. Każdy token ma swój zestaw uprawnień; jeden token ≠ jeden klient — możesz mieć osobny token na laptopa do Claude Code (full access), osobny do Cursor który ma tylko czytać studia, osobny do n8n który ma czytać tylko homelab + jego sekrety.
+mcp-brain uses multi-token bearer auth with per-token permission scopes. Each token has its own set of permissions; one token does not equal one client — you can have a separate token for your laptop running Claude Code (full access), another for Cursor that can only read school notes, another for n8n that can only read homelab + its secrets schema.
 
-## Konfiguracja
+## Configuration
 
-Wszystkie tokeny żyją w `/opt/mcp-brain/data/auth.yaml` (albo gdziekolwiek wskazuje `MCP_AUTH_CONFIG`). Format:
+All tokens live in `/opt/mcp-brain/data/auth.yaml` (or wherever `MCP_AUTH_CONFIG` points). Format:
 
 ```yaml
 tokens:
@@ -24,61 +24,61 @@ tokens:
       - briefing:school
 ```
 
-Pole `id` służy do logowania ("token cursor-school accessed knowledge_read school/power-electronics"). Sama wartość tokena nigdy nie trafia do logów.
+The `id` field is what shows up in logs ("token cursor-school accessed knowledge_read school/power-electronics"). The token value itself is never logged.
 
-**Po edycji `auth.yaml` zrestartuj kontener** — nie ma hot-reloadu:
+**After editing `auth.yaml`, restart the container** — there is no hot reload:
 ```bash
 cd /opt/mcp-brain && docker compose restart
 ```
 
-## Generowanie tokena
+## Generating a token
 
 ```bash
 printf 'tok_%s\n' "$(openssl rand -hex 32)"
 ```
 
-Konwencja prefiksu `tok_` jest opcjonalna ale ułatwia rozpoznawanie sekretów w gistach/diffach.
+The `tok_` prefix convention is optional but makes it easier to spot secrets in gists/diffs.
 
 ## Scope grammar
 
-Trzy-segmentowa składnia z wildcardami `*`:
+A three-segment grammar with `*` wildcards:
 
 ```
 <resource>:<action>:<scope>
 ```
 
-Dla zasobów bez sensownego rozróżnienia read/write (inbox, briefing, secrets_schema) drugi segment jest pominięty:
+For resources where read/write distinction does not apply (inbox, briefing, secrets_schema) the second segment is collapsed:
 
 ```
 <resource>:<scope>
 ```
 
-| Tool                | Wymagane (lub filtruje po)                            |
+| Tool                | Required (or filtered by)                             |
 |---------------------|-------------------------------------------------------|
 | `knowledge_read`    | `knowledge:read:<scope>`                              |
 | `knowledge_update`  | `knowledge:write:<scope>`                             |
-| `knowledge_list`    | filtruje do tych `<scope>` które token może czytać    |
+| `knowledge_list`    | filters down to `<scope>` values the token can read   |
 | `inbox_list`        | `inbox:read`                                          |
 | `inbox_add`         | `inbox:write`                                         |
 | `inbox_accept`      | `inbox:write` AND `knowledge:write:<target_scope>`    |
 | `inbox_reject`      | `inbox:write`                                         |
-| `get_briefing`      | filtruje sekcje do `briefing:<scope>` (lub `*`)       |
-| `secrets_schema`    | filtruje wpisy do `secrets_schema:<scope>` (lub `*`)  |
+| `get_briefing`      | filters sections to `briefing:<scope>` (or `*`)       |
+| `secrets_schema`    | filters entries to `secrets_schema:<scope>` (or `*`)  |
 
-### Wildcardy
+### Wildcards
 
-| Granted              | Co matchuje                                      |
+| Granted              | Matches                                          |
 |----------------------|--------------------------------------------------|
-| `*`                  | wszystko (god mode)                              |
-| `knowledge:*:*`      | wszystkie operacje na knowledge, każdy scope     |
-| `knowledge:read:*`   | tylko read na knowledge, każdy scope             |
-| `knowledge:read:work`| tylko knowledge_read na `work/`                  |
+| `*`                  | everything (god mode)                            |
+| `knowledge:*:*`      | every knowledge operation, every scope           |
+| `knowledge:read:*`   | read-only on knowledge, every scope              |
+| `knowledge:read:work`| only knowledge_read on `work/`                   |
 
-Wildcardy działają tylko przy zachowanej liczbie segmentów. `knowledge:*` **nie matchuje** `knowledge:read:work` (różna arity). Jedyny wyjątek to bare `*`.
+Wildcards only work when the segment count matches. `knowledge:*` does **not** match `knowledge:read:work` (different arity). The only exception is the bare `*`.
 
-## Przykładowe role
+## Example roles
 
-### Pełny dostęp dla siebie
+### Full access for yourself
 
 ```yaml
 - id: claude-code-laptop
@@ -86,7 +86,7 @@ Wildcardy działają tylko przy zachowanej liczbie segmentów. `knowledge:*` **n
   scopes: ["*"]
 ```
 
-### Cursor / kolega — tylko studia
+### Cursor / collaborator — school only
 
 ```yaml
 - id: cursor-student
@@ -99,7 +99,7 @@ Wildcardy działają tylko przy zachowanej liczbie segmentów. `knowledge:*` **n
     - briefing:school
 ```
 
-Może czytać/pisać tylko `school/`. `knowledge_list()` pokaże mu tylko pliki ze school. `get_briefing()` pokaże tylko sekcję school + preamble (timezone, preferencje). Nie zobaczy `secrets_schema` w ogóle.
+Can read/write only `school/`. `knowledge_list()` will only show files under school. `get_briefing()` returns only the school section plus the preamble (timezone, preferences). They will not see `secrets_schema` at all.
 
 ### n8n homelab — read-only monitoring
 
@@ -112,9 +112,9 @@ Może czytać/pisać tylko `school/`. `knowledge_list()` pokaże mu tylko pliki 
     - secrets_schema:homelab
 ```
 
-Może czytać dokumentację homelaba i widzieć schemat sekretów homelaba (gdzie leżą, nie wartości). Nie ma write nigdzie. Nie widzi schoolu ani worka.
+Can read homelab docs and view the homelab secrets schema (where things live, not the values themselves). No write access anywhere. Cannot see school or work.
 
-### Custom GPT — tylko briefing
+### Custom GPT — briefing only
 
 ```yaml
 - id: custom-gpt-briefer
@@ -124,9 +124,9 @@ Może czytać dokumentację homelaba i widzieć schemat sekretów homelaba (gdzi
     - briefing:school
 ```
 
-Pokaże jedynie briefing do tych dwóch scopes. Wszystko inne → 403/permission denied.
+Will only see briefings for those two scopes. Everything else returns permission denied.
 
-### Bot Discord — tylko inbox
+### Discord bot — inbox only
 
 ```yaml
 - id: discord-inbox-bot
@@ -135,33 +135,33 @@ Pokaże jedynie briefing do tych dwóch scopes. Wszystko inne → 403/permission
     - inbox:write
 ```
 
-Może wrzucać propozycje do inboxa. Nie może ich akceptować, czytać, ani widzieć knowledge.
+Can drop suggestions into the inbox. Cannot accept them, cannot read them, cannot see knowledge.
 
-## Rotacja tokenów
+## Token rotation
 
-1. Wygeneruj nowy: `printf 'tok_%s\n' "$(openssl rand -hex 32)"`
-2. Edytuj `data/auth.yaml`, dopisz nowy wpis (nie kasuj starego od razu)
+1. Generate a new one: `printf 'tok_%s\n' "$(openssl rand -hex 32)"`
+2. Edit `data/auth.yaml`, add the new entry (do not delete the old one yet)
 3. `docker compose restart`
-4. Zaktualizuj klienta na nowy token, zweryfikuj że działa
-5. Skasuj stary wpis, `restart` ponownie
+4. Update the client to use the new token, verify it works
+5. Delete the old entry, `restart` again
 
-Nie ma deny-listy — usunięcie tokena z YAML go unieważnia natychmiast po restarcie.
+There is no deny list — removing a token from the YAML invalidates it the moment the container restarts.
 
-## Co tokeny widzą w logach
+## What tokens see in logs
 
-Logi serwera uvicorna pokażą:
+Plain uvicorn logs show:
 
-- IP klienta
+- Client IP
 - Request line (`GET /sse`, `POST /messages/...`)
-- Status kod (200, 401)
+- Status code (200, 401)
 
-W przyszłości (poza MVP) mogę dodać structured logging tool-name + token.id na każde wywołanie. Na razie minimalnie.
+Beyond MVP: I plan to add structured logging with `tool name + token.id` per call. Minimal for now.
 
-## Bezpieczeństwo i hardening
+## Security and hardening
 
-- **Bind tylko na localhost**: `docker-compose.yml` ma `127.0.0.1:8400` — TLS terminuj w reverse proxy.
-- **`auth.yaml` chmod 600** — installer to robi automatycznie.
-- **Knowledge ma osobny git inside `data/knowledge`** — historia wszystkich zmian, możesz `git log` i odtworzyć stan sprzed tygodnia.
-- **Brak HTTP `Server` headera obfuscation** — single-user, nie ma sensu.
-- **Brak rate limitingu w MVP** — Caddy może to zrobić jeśli zechcesz (`@limit { ... }`).
-- **`secrets_schema` nigdy nie zwraca wartości** — tylko nazwy kluczy + lokalizację (np. "1Password / vault: Work").
+- **Bind to localhost only**: `docker-compose.yml` uses `127.0.0.1:8400` — terminate TLS in the reverse proxy.
+- **`auth.yaml` chmod 600** — the installer does this automatically.
+- **`data/knowledge` has its own git inside** — full history of every change, you can `git log` and recreate state from a week ago.
+- **No HTTP `Server` header obfuscation** — single user, no point.
+- **No rate limiting in MVP** — Caddy can do that if you want (`@limit { ... }`).
+- **`secrets_schema` never returns values** — only key names + storage location (e.g. "1Password / vault: Work").

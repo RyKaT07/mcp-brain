@@ -9,7 +9,7 @@ user:
 preferences:
   code_style: "explicit types, no magic"
   commit_messages: conventional-commits
-  docs_language: "pl (reports), en (code/comments)"
+  docs_language: "en (code, comments, docs)"
 
 projects:
   work:
