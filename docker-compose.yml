@@ -1,0 +1,34 @@
+# mcp-brain — production compose
+#
+# Mounts:
+#   ./data/knowledge → /data/knowledge   (markdown KB, git-tracked, RW)
+#   ./data/auth.yaml → /data/auth.yaml   (bearer tokens, RO)
+#
+# Default port binding is 127.0.0.1:8400 — terminate TLS in your reverse
+# proxy (Caddy / Traefik / nginx) and forward there. To expose directly,
+# change to "8400:8400" but you really do not want a bare bearer-token
+# server on 0.0.0.0.
+
+services:
+  mcp-brain:
+    image: ${MCP_BRAIN_IMAGE:-ghcr.io/CHANGEME/mcp-brain:latest}
+    container_name: mcp-brain
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8400:8400"
+    environment:
+      MCP_TRANSPORT: sse
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8400"
+      MCP_KNOWLEDGE_DIR: /data/knowledge
+      MCP_AUTH_CONFIG: /data/auth.yaml
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:8400/}
+    volumes:
+      - ./data/knowledge:/data/knowledge
+      - ./data/auth.yaml:/data/auth.yaml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8400/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
