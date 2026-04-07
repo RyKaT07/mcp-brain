@@ -1,10 +1,33 @@
-# Caddyfile — place in /etc/caddy/Caddyfile on the LXC
-# Replace mcp.yourdomain.com with your DDNS hostname
+# Caddyfile — drop into /etc/caddy/Caddyfile on your edge LXC.
+# Replace mcp.yourdomain.tld with your real DDNS hostname.
+#
+# Note: bearer-token enforcement happens INSIDE mcp-brain itself, so
+# Caddy is purely a TLS terminator + reverse proxy here. No `@noauth`
+# block required.
 
-mcp.yourdomain.com {
-    reverse_proxy localhost:8400
+mcp.yourdomain.tld {
+    # Forward to the LXC running docker-compose. Use the LXC IP if Caddy
+    # is on a different host, or 127.0.0.1:8400 if it shares the LXC.
+    reverse_proxy 10.0.0.42:8400
 
-    # Optional: restrict by Bearer token at Caddy level
-    # @noauth not header Authorization "Bearer YOUR_TOKEN"
-    # respond @noauth 401
+    # Helpful headers for SSE — Caddy handles long-lived connections fine
+    # but you can lengthen the timeout if you see disconnects.
+    # reverse_proxy 10.0.0.42:8400 {
+    #     transport http {
+    #         read_timeout 1h
+    #     }
+    # }
+
+    # Optional: rate-limit accidental hammering. Tune to taste.
+    # @api path /sse /messages*
+    # rate_limit @api {
+    #     zone mcp 100r/m
+    # }
+
+    encode zstd gzip
+
+    log {
+        output file /var/log/caddy/mcp-brain.log
+        format json
+    }
 }
