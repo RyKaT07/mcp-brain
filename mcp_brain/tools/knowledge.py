@@ -174,3 +174,105 @@ def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
                 results.append(f"{d.name}/{f.stem}")
 
         return "\n".join(results) if results else "No knowledge files found."
+
+    @mcp.tool()
+    def knowledge_undo(steps: int = 1) -> str:
+        """Revert the most recent knowledge commit(s).
+
+        Non-destructive: uses `git revert` to create new commits that undo
+        the target commits. History is preserved and can itself be reverted,
+        so this is always safe. Call this when the user says "cofnij",
+        "usun to", "undo", "don't save that", "delete the last save" or any
+        equivalent request to back out a recent write.
+
+        Requires a full knowledge:write:* scope — partial-scope tokens cannot
+        undo, because a revert may need to touch files outside their scope.
+
+        Args:
+            steps: Number of most recent commits to revert (newest first).
+                   Default 1. Hard-capped at 10 as a safety limit; if the
+                   user wants to undo further, ssh into the host.
+
+        Returns:
+            Summary of which commits were reverted, or an error string.
+        """
+        try:
+            require("knowledge:write:*")
+        except PermissionDenied as e:
+            return f"{e}. knowledge_undo requires knowledge:write:* (full write scope)."
+
+        if steps < 1:
+            return "Error: steps must be >= 1"
+        if steps > 10:
+            return "Error: steps must be <= 10 (safety limit — use ssh for deeper rollbacks)"
+
+        # 1. How many commits exist total? We refuse to wipe the init commit.
+        try:
+            count_out = subprocess.run(
+                ["git", "rev-list", "--count", "HEAD"],
+                cwd=knowledge_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            total = int(count_out.stdout.strip())
+        except FileNotFoundError:
+            return "Error: git not installed inside the container"
+        except subprocess.CalledProcessError as e:
+            return f"Git error (rev-list): {e.stderr.strip() or e.stdout.strip()}"
+        except ValueError:
+            return "Error: could not parse commit count from git"
+
+        if total - steps < 1:
+            return (
+                f"Refused: only {total} commit(s) exist (including init). "
+                f"Reverting {steps} would leave history empty."
+            )
+
+        # 2. Fetch the SHAs + subjects of the commits we are about to revert.
+        #    Newest first so we revert in reverse-chronological order.
+        try:
+            log_out = subprocess.run(
+                ["git", "log", "--format=%H %s", f"-{steps}"],
+                cwd=knowledge_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            return f"Git error (log): {e.stderr.strip() or e.stdout.strip()}"
+
+        lines = [line for line in log_out.stdout.strip().split("\n") if line]
+        if not lines:
+            return "No commits to revert."
+
+        # 3. Revert by explicit SHA (safe even though HEAD moves underneath us).
+        reverted: list[str] = []
+        for line in lines:
+            sha, _, subject = line.partition(" ")
+            try:
+                subprocess.run(
+                    ["git", "revert", "--no-edit", sha],
+                    cwd=knowledge_dir,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                reverted.append(f"  {sha[:7]} {subject}")
+            except subprocess.CalledProcessError as e:
+                # Partial-success report: what we managed, and where we stopped.
+                msg = e.stderr.strip() or e.stdout.strip() or "unknown error"
+                already = "\n".join(reverted) if reverted else "  (none)"
+                return (
+                    f"Partial revert. Failed on {sha[:7]} ({subject}): {msg}\n"
+                    f"Successfully reverted before failure:\n{already}\n"
+                    f"Resolve the conflict manually inside the container "
+                    f"(`cd /data/knowledge && git status`)."
+                )
+
+        return (
+            f"Reverted {len(reverted)} commit(s):\n"
+            + "\n".join(reverted)
+            + "\n\nHistory preserved — each revert is itself a new commit "
+            "and can be undone again with `git revert HEAD`."
+        )
