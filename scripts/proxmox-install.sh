@@ -22,6 +22,8 @@
 #     BRIDGE             vmbr0
 #     IP                 dhcp   (or CIDR like 10.0.0.42/24 — then also GATEWAY)
 #     GATEWAY            (only if IP is not dhcp)
+#     NAMESERVER         DNS server for the LXC (default: inherit from host)
+#     SEARCHDOMAIN       DNS search domain for the LXC (default: inherit from host)
 #     TEMPLATE           debian-13-standard_*.tar.zst  (latest matching one)
 #     CT_PASSWORD        random 24-char if unset
 #     SSH_KEY_FILE       path to a public key to inject (no default)
@@ -150,6 +152,8 @@ build_config() {
     BRIDGE="${BRIDGE:-vmbr0}"
     IP="${IP:-dhcp}"
     GATEWAY="${GATEWAY:-}"
+    NAMESERVER="${NAMESERVER:-}"
+    SEARCHDOMAIN="${SEARCHDOMAIN:-}"
     TEMPLATE="$(pick_template)"
     CT_PASSWORD="${CT_PASSWORD:-$(generate_password)}"
     SSH_KEY_FILE="${SSH_KEY_FILE:-}"
@@ -174,7 +178,9 @@ show_config() {
     printf '  swap:      %s MB\n' "$SWAP_MB"
     printf '  bridge:    %s\n' "$BRIDGE"
     printf '  ip:        %s\n' "$IP"
-    [ -n "$GATEWAY" ] && printf '  gateway:   %s\n' "$GATEWAY"
+    [ -n "$GATEWAY" ]      && printf '  gateway:   %s\n' "$GATEWAY"
+    [ -n "$NAMESERVER" ]   && printf '  dns:       %s\n' "$NAMESERVER"
+    [ -n "$SEARCHDOMAIN" ] && printf '  search:    %s\n' "$SEARCHDOMAIN"
     printf '  repo:      github.com/%s@%s\n' "$MCP_BRAIN_REPO" "$MCP_BRAIN_BRANCH"
     echo
 }
@@ -219,6 +225,14 @@ create_lxc() {
         --onboot 1
         --password "$CT_PASSWORD"
     )
+
+    if [ -n "$NAMESERVER" ]; then
+        pct_args+=(--nameserver "$NAMESERVER")
+    fi
+
+    if [ -n "$SEARCHDOMAIN" ]; then
+        pct_args+=(--searchdomain "$SEARCHDOMAIN")
+    fi
 
     if [ -n "$SSH_KEY_FILE" ]; then
         [ -f "$SSH_KEY_FILE" ] || fail "SSH_KEY_FILE not found: $SSH_KEY_FILE"
