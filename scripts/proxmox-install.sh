@@ -302,11 +302,24 @@ install_inside() {
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends curl ca-certificates' \
         || fail "apt-get failed inside the LXC"
 
-    log "running mcp-brain installer from github.com/${MCP_BRAIN_REPO}@${MCP_BRAIN_BRANCH}"
+    log "downloading mcp-brain installer from github.com/${MCP_BRAIN_REPO}@${MCP_BRAIN_BRANCH}"
     local raw="https://raw.githubusercontent.com/${MCP_BRAIN_REPO}/${MCP_BRAIN_BRANCH}/scripts/install.sh"
-    # Pass the same MCP_BRAIN_REPO/BRANCH through so the installer fetches from the same place.
-    pct exec "$CTID" -- bash -c "MCP_BRAIN_REPO='${MCP_BRAIN_REPO}' MCP_BRAIN_BRANCH='${MCP_BRAIN_BRANCH}' bash <(curl -fsSL '${raw}')" \
+    # Two-step: curl → /tmp/install.sh, then bash /tmp/install.sh. Avoids
+    # process substitution (bash <(...)) which can misbehave inside
+    # 'pct exec' non-interactive shells on minimal Debian templates.
+    pct exec "$CTID" -- bash -c "curl -fsSL '${raw}' -o /tmp/mcp-brain-install.sh" \
+        || fail "failed to download install.sh into the LXC"
+    pct exec "$CTID" -- bash -c "chmod +x /tmp/mcp-brain-install.sh" \
+        || fail "chmod on install.sh failed"
+
+    log "running mcp-brain installer inside the LXC"
+    pct exec "$CTID" -- env \
+        MCP_BRAIN_REPO="${MCP_BRAIN_REPO}" \
+        MCP_BRAIN_BRANCH="${MCP_BRAIN_BRANCH}" \
+        bash /tmp/mcp-brain-install.sh install \
         || fail "mcp-brain install.sh failed inside the LXC — see output above"
+
+    pct exec "$CTID" -- rm -f /tmp/mcp-brain-install.sh || true
 }
 
 extract_state() {
