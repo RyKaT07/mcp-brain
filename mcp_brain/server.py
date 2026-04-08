@@ -30,17 +30,48 @@ PUBLIC_URL = os.getenv("MCP_PUBLIC_URL", f"http://localhost:{PORT}/")
 TRANSPORT = os.getenv("MCP_TRANSPORT", "sse")
 
 
+def _load_instructions(knowledge_dir: Path) -> str | None:
+    """Load optional write-policy instructions from `knowledge/_meta/write-policy.md`.
+
+    If the file exists, its contents are injected into the MCP server's
+    `instructions` field and become visible to every client that connects
+    (via the `InitializeResult` of the MCP protocol). This lets the user
+    maintain a single source of truth for write discipline — in the
+    knowledge store itself — instead of copying a CLAUDE.md into every
+    client config on every device.
+
+    Missing file → returns None and the server starts with no custom
+    instructions. Unreadable file → same: we never block startup on this.
+    """
+    policy = knowledge_dir / "_meta" / "write-policy.md"
+    if not policy.exists():
+        return None
+    try:
+        content = policy.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return content or None
+
+
 def _build_mcp() -> FastMCP:
     """Construct the FastMCP instance, with bearer auth on SSE only."""
+    instructions = _load_instructions(KNOWLEDGE_DIR)
+
     if TRANSPORT == "stdio":
         # Local dev: no HTTP, no auth. Tools fall back to god-mode.
-        mcp = FastMCP("mcp-brain", host=HOST, port=PORT)
+        mcp = FastMCP(
+            "mcp-brain",
+            host=HOST,
+            port=PORT,
+            instructions=instructions,
+        )
     else:
         verifier = YamlTokenVerifier(AUTH_CONFIG_PATH)
         mcp = FastMCP(
             "mcp-brain",
             host=HOST,
             port=PORT,
+            instructions=instructions,
             token_verifier=verifier,
             auth=AuthSettings(
                 issuer_url=PUBLIC_URL,  # type: ignore[arg-type]
