@@ -180,7 +180,14 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
             return f"Item {item_id} has no suggested_target. Update it first or merge manually."
 
         # Import here to avoid circular deps
-        from mcp_brain.tools.knowledge import _resolve_file, _parse_sections, _rebuild_markdown, _git_commit
+        from mcp_brain.tools.knowledge import (
+            _git_commit,
+            _parse_sections,
+            _rebuild_markdown,
+            _resolve_file,
+            _validate_scope_project,
+            _validate_scope_writable,
+        )
 
         target_parts = item_data["suggested_target"].split("/", 1)
         if len(target_parts) != 2:
@@ -193,6 +200,14 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
             require(f"knowledge:write:{scope}")
         except PermissionDenied as e:
             return str(e)
+
+        err = _validate_scope_project(scope, project)
+        if err:
+            return err
+
+        err = _validate_scope_writable(scope)
+        if err:
+            return err
 
         section = item_data.get("suggested_section", "imported")
         filepath = _resolve_file(knowledge_dir, scope, project)
