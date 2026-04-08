@@ -58,9 +58,12 @@ else
     C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_BOLD="" C_RESET=""
 fi
 
-log()   { printf '%s==>%s %s\n' "$C_BLUE" "$C_RESET" "$*"; }
-ok()    { printf '%s✓%s %s\n'   "$C_GREEN" "$C_RESET" "$*"; }
-warn()  { printf '%s!%s %s\n'   "$C_YELLOW" "$C_RESET" "$*"; }
+# All log helpers go to stderr — never to stdout — so functions that use
+# stdout to return a value (e.g. pick_template) can be safely captured
+# with $(...) without colour escapes leaking into the captured string.
+log()   { printf '%s==>%s %s\n' "$C_BLUE" "$C_RESET" "$*" >&2; }
+ok()    { printf '%s✓%s %s\n'   "$C_GREEN" "$C_RESET" "$*" >&2; }
+warn()  { printf '%s!%s %s\n'   "$C_YELLOW" "$C_RESET" "$*" >&2; }
 fail()  { printf '%s✗%s %s\n'   "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 
 # -----------------------------------------------------------------------------
