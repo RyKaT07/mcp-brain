@@ -26,7 +26,10 @@
 #     SEARCHDOMAIN       DNS search domain for the LXC (default: inherit from host)
 #     TEMPLATE           debian-13-standard_*.tar.zst  (latest matching one)
 #     CT_PASSWORD        random 24-char if unset
-#     SSH_KEY_FILE       path to a public key to inject (no default)
+#     SSH_PUBKEY         a single public key as a string ('ssh-ed25519 AAAA...')
+#     SSH_KEY_FILE       path to an authorized_keys file (no default)
+#                        SSH_PUBKEY and SSH_KEY_FILE are mutually exclusive;
+#                        if both are set, SSH_KEY_FILE wins.
 #     MCP_BRAIN_REPO     RyKaT07/mcp-brain
 #     MCP_BRAIN_BRANCH   main
 #     ASSUME_YES=1       skip the confirmation prompt
@@ -36,6 +39,13 @@ set -euo pipefail
 # -----------------------------------------------------------------------------
 # cosmetics + logging
 # -----------------------------------------------------------------------------
+
+# Cleanup temp files (e.g. materialized SSH_PUBKEY) on any exit.
+TMP_PUBKEY=""
+cleanup() {
+    [ -n "$TMP_PUBKEY" ] && [ -f "$TMP_PUBKEY" ] && rm -f "$TMP_PUBKEY"
+}
+trap cleanup EXIT
 
 if [ -t 1 ]; then
     C_RED=$'\033[31m'
@@ -157,6 +167,22 @@ build_config() {
     TEMPLATE="$(pick_template)"
     CT_PASSWORD="${CT_PASSWORD:-$(generate_password)}"
     SSH_KEY_FILE="${SSH_KEY_FILE:-}"
+    SSH_PUBKEY="${SSH_PUBKEY:-}"
+
+    # Materialize an inline SSH_PUBKEY into a tempfile so the existing
+    # SSH_KEY_FILE plumbing handles both paths uniformly. SSH_KEY_FILE
+    # wins if both are set.
+    if [ -z "$SSH_KEY_FILE" ] && [ -n "$SSH_PUBKEY" ]; then
+        case "$SSH_PUBKEY" in
+            ssh-rsa\ *|ssh-ed25519\ *|ecdsa-sha2-*\ *|sk-*\ *) ;;
+            *) fail "SSH_PUBKEY does not look like a public key (should start with ssh-rsa / ssh-ed25519 / ecdsa-sha2-...)" ;;
+        esac
+        TMP_PUBKEY="$(mktemp)"
+        printf '%s\n' "$SSH_PUBKEY" > "$TMP_PUBKEY"
+        chmod 600 "$TMP_PUBKEY"
+        SSH_KEY_FILE="$TMP_PUBKEY"
+    fi
+
     MCP_BRAIN_REPO="${MCP_BRAIN_REPO:-RyKaT07/mcp-brain}"
     MCP_BRAIN_BRANCH="${MCP_BRAIN_BRANCH:-main}"
 
