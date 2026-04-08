@@ -100,7 +100,9 @@ write_compose() {
 
 cmd_install() {
     require_root "$@"
-    ensure_pkg curl ca-certificates openssl xxd
+    # git is used to initialize the knowledge directory as a tracked repo;
+    # it is NOT installed by default on minimal Debian templates.
+    ensure_pkg curl ca-certificates openssl xxd git
     ensure_docker
 
     log "creating ${INSTALL_DIR}"
@@ -134,11 +136,19 @@ cmd_install() {
 
     if [ ! -d "${INSTALL_DIR}/data/knowledge/.git" ]; then
         log "initializing knowledge git repo (auto-commit history)"
-        git -C "${INSTALL_DIR}/data/knowledge" init -q -b main 2>/dev/null || true
-        git -C "${INSTALL_DIR}/data/knowledge" config user.email "mcp-brain@localhost"
-        git -C "${INSTALL_DIR}/data/knowledge" config user.name "mcp-brain"
-        git -C "${INSTALL_DIR}/data/knowledge" commit -q --allow-empty -m "init" 2>/dev/null || true
-        chown -R 1000:1000 "${INSTALL_DIR}/data/knowledge/.git"
+        # git is installed via ensure_pkg above, so init must succeed.
+        # All steps are serialized: init first (must succeed), then
+        # config (must succeed) against the resulting repo, then the
+        # empty bootstrap commit. No error suppression — if anything
+        # breaks here we want to see it, not silently continue.
+        (
+            cd "${INSTALL_DIR}/data/knowledge"
+            git init -q -b main
+            git config user.email "mcp-brain@localhost"
+            git config user.name "mcp-brain"
+            git commit -q --allow-empty -m "init"
+        ) || warn "knowledge git init failed — auto-commit history will not work until fixed"
+        chown -R 1000:1000 "${INSTALL_DIR}/data/knowledge/.git" 2>/dev/null || true
     fi
 
     log "pulling image ${IMAGE}"
