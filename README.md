@@ -24,7 +24,7 @@ This creates a fresh unprivileged Debian LXC with nesting+keyctl enabled (requir
 Override any default with env vars:
 
 ```bash
-CTID=150 HOSTNAME=brain RAM_MB=2048 DISK_GB=16 \
+CTID=150 CT_HOSTNAME=brain RAM_MB=2048 DISK_GB=16 \
   bash -c "$(curl -fsSL https://raw.githubusercontent.com/RyKaT07/mcp-brain/main/scripts/proxmox-install.sh)"
 ```
 

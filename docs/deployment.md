@@ -28,7 +28,7 @@ What it does:
 All defaults can be overridden via env vars before the `bash -c`:
 
 ```bash
-CTID=150 HOSTNAME=brain RAM_MB=2048 DISK_GB=16 \
+CTID=150 CT_HOSTNAME=brain RAM_MB=2048 DISK_GB=16 \
   bash -c "$(curl -fsSL https://raw.githubusercontent.com/RyKaT07/mcp-brain/main/scripts/proxmox-install.sh)"
 ```
 

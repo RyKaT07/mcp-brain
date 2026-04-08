@@ -13,7 +13,7 @@
 #
 # Environment overrides (all optional):
 #     CTID               next free id from /cluster/nextid
-#     HOSTNAME           mcp-brain
+#     CT_HOSTNAME           mcp-brain
 #     CORES              1
 #     RAM_MB             1024
 #     SWAP_MB            512
@@ -140,7 +140,7 @@ generate_password() {
 
 build_config() {
     CTID="$(pick_ctid)"
-    HOSTNAME="${HOSTNAME:-mcp-brain}"
+    CT_HOSTNAME="${CT_HOSTNAME:-mcp-brain}"
     CORES="${CORES:-1}"
     RAM_MB="${RAM_MB:-1024}"
     SWAP_MB="${SWAP_MB:-512}"
@@ -165,7 +165,7 @@ show_config() {
     echo
     printf '%s%smcp-brain LXC configuration%s\n' "$C_BOLD" "$C_BLUE" "$C_RESET"
     printf '  CTID:      %s\n' "$CTID"
-    printf '  hostname:  %s\n' "$HOSTNAME"
+    printf '  hostname:  %s\n' "$CT_HOSTNAME"
     printf '  template:  %s\n' "$TEMPLATE"
     printf '  storage:   %s\n' "$STORAGE"
     printf '  disk:      %s GB\n' "$DISK_GB"
@@ -206,7 +206,7 @@ create_lxc() {
 
     local pct_args=(
         "$CTID" "$template_path"
-        --hostname "$HOSTNAME"
+        --hostname "$CT_HOSTNAME"
         --cores "$CORES"
         --memory "$RAM_MB"
         --swap "$SWAP_MB"
@@ -225,7 +225,7 @@ create_lxc() {
         pct_args+=(--ssh-public-keys "$SSH_KEY_FILE")
     fi
 
-    log "creating LXC $CTID ($HOSTNAME)"
+    log "creating LXC $CTID ($CT_HOSTNAME)"
     pct create "${pct_args[@]}"
     ok "LXC $CTID created"
 }
@@ -278,7 +278,7 @@ print_summary() {
     printf '%s%s━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━%s\n' "$C_BOLD" "$C_GREEN" "$C_RESET"
     echo
     printf '  CTID:       %s\n' "$CTID"
-    printf '  hostname:   %s\n' "$HOSTNAME"
+    printf '  hostname:   %s\n' "$CT_HOSTNAME"
     printf '  LXC IP:     %s\n' "${LXC_IP:-unknown}"
     printf '  service:    http://%s:8400/healthz\n' "${LXC_IP:-LXC_IP}"
     echo
