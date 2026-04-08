@@ -59,11 +59,60 @@ def _rebuild_markdown(sections: dict[str, str]) -> str:
     return "\n".join(parts)
 
 
+_SAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _sanitize(name: str) -> str:
+    return _SAFE_NAME_RE.sub("", name)
+
+
+def _validate_scope_project(scope: str, project: str) -> str | None:
+    """Return an error string if scope or project is invalid, else None.
+
+    Rejects empty names (so callers can't escape the per-scope directory
+    via strings that sanitize to "") and reserves underscore-prefixed
+    scopes for server-internal configuration (like `_meta/write-policy.md`)
+    that should only be edited via filesystem access, never via MCP tools.
+    """
+    safe_scope = _sanitize(scope)
+    safe_project = _sanitize(project)
+    if not safe_scope:
+        return (
+            f"Invalid scope {scope!r}: must contain at least one "
+            f"[a-zA-Z0-9_-] character after sanitization."
+        )
+    if not safe_project:
+        return (
+            f"Invalid project {project!r}: must contain at least one "
+            f"[a-zA-Z0-9_-] character after sanitization."
+        )
+    return None
+
+
+def _validate_scope_writable(scope: str) -> str | None:
+    """Return an error if `scope` is reserved (underscore-prefixed), else None.
+
+    Read access to `_meta/` is fine (the policy is already visible via MCP
+    instructions) but writes must go through the filesystem so a
+    compromised agent cannot rewrite its own discipline rules.
+    """
+    if _sanitize(scope).startswith("_"):
+        return (
+            f"Refused: scope {scope!r} is reserved for server-internal "
+            f"configuration. Edit files under knowledge/_meta/ directly "
+            f"via SSH; not through knowledge_update."
+        )
+    return None
+
+
 def _resolve_file(knowledge_dir: Path, scope: str, project: str) -> Path:
-    """Resolve knowledge file path: knowledge/{scope}/{project}.md"""
-    safe_scope = re.sub(r"[^a-zA-Z0-9_-]", "", scope)
-    safe_project = re.sub(r"[^a-zA-Z0-9_-]", "", project)
-    return knowledge_dir / safe_scope / f"{safe_project}.md"
+    """Resolve knowledge file path: knowledge/{scope}/{project}.md.
+
+    Callers MUST run _validate_scope_project first — this function trusts
+    its inputs and only applies the character-class sanitization as a
+    second defense.
+    """
+    return knowledge_dir / _sanitize(scope) / f"{_sanitize(project)}.md"
 
 
 def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
@@ -81,6 +130,10 @@ def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
             require(f"knowledge:read:{scope}")
         except PermissionDenied as e:
             return str(e)
+
+        err = _validate_scope_project(scope, project)
+        if err:
+            return err
 
         filepath = _resolve_file(knowledge_dir, scope, project)
         if not filepath.exists():
@@ -113,6 +166,14 @@ def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
             require(f"knowledge:write:{scope}")
         except PermissionDenied as e:
             return str(e)
+
+        err = _validate_scope_project(scope, project)
+        if err:
+            return err
+
+        err = _validate_scope_writable(scope)
+        if err:
+            return err
 
         filepath = _resolve_file(knowledge_dir, scope, project)
         filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -157,12 +218,17 @@ def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
                 return str(e)
             search_dirs = [knowledge_dir / scope]
         else:
+            # Default listing hides internal scopes (any `_foo` dir) and the
+            # inbox staging area. Callers who genuinely want those must pass
+            # `scope="_meta"` (or similar) explicitly and have the matching
+            # read grant.
             allowed = allowed_subscopes("knowledge:read")
             search_dirs = [
                 d
                 for d in knowledge_dir.iterdir()
                 if d.is_dir()
                 and d.name not in ("inbox", ".git")
+                and not d.name.startswith("_")
                 and (allowed is ALL or d.name in allowed)
             ]
 
