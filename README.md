@@ -96,6 +96,7 @@ After editing: `cd /opt/mcp-brain && docker compose restart`. Full scope grammar
 |------|---------------|
 | `knowledge_read` | `knowledge:read:<scope>` |
 | `knowledge_update` | `knowledge:write:<scope>` |
+| `knowledge_undo` | `knowledge:write:*` (full write) |
 | `knowledge_list` | filtered by `knowledge:read:*` |
 | `inbox_list` | `inbox:read` |
 | `inbox_show` | `inbox:read` |
@@ -104,6 +105,24 @@ After editing: `cd /opt/mcp-brain && docker compose restart`. Full scope grammar
 | `inbox_reject` | `inbox:write` |
 | `get_briefing` | filtered by `briefing:<scope>` |
 | `secrets_schema` | filtered by `secrets_schema:<scope>` |
+
+## Write policy (optional, per-server instructions)
+
+If `knowledge/_meta/write-policy.md` exists, its contents are injected
+into the MCP `InitializeResult.instructions` field at startup and become
+part of every connected agent's system prompt for the session. This is
+the recommended place to put rules like "propose before writing",
+"announce saves in a footer", "never infer health facts from context",
+etc. — so that the same discipline applies on every device without
+copying a local config file around.
+
+- File is optional — if missing, mcp-brain starts with no custom
+  instructions.
+- The server reads it once at startup; restart the container after edits.
+- See [`docs/write-policy.example.md`](docs/write-policy.example.md) for
+  a ready-to-copy template.
+- Your actual policy lives in your (gitignored) knowledge store, not in
+  this repo — it's personal, not framework code.
 
 ## Architecture
 

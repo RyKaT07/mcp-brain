@@ -1,51 +1,73 @@
-# meta.yaml — personal context for AI agents
-# Copy to knowledge/meta.yaml and fill in your details.
+# meta.yaml — personal context for AI agents.
+#
+# Copy to knowledge/meta.yaml and fill in your own details. This file is
+# loaded by `get_briefing` and `secrets_schema` to answer "who am I, what
+# am I working on, where do my secrets live".
+#
+# knowledge/meta.yaml is gitignored — your real profile never goes into
+# the mcp-brain repo.
 
 user:
   name: Your Name
-  lang: pl
-  timezone: Europe/Warsaw
+  lang: en
+  timezone: UTC
 
 preferences:
   code_style: "explicit types, no magic"
   commit_messages: conventional-commits
-  docs_language: "en (code, comments, docs)"
+  docs_language: "en (code, comments, docs, notes)"
 
+# Declarative project index. Each top-level key is a `scope` and the
+# agent will look for knowledge files under `knowledge/<scope>/*.md`.
+# Declaring a project here makes it visible to `get_briefing`; agents
+# can still create ad-hoc files in an undeclared scope, they just won't
+# show up in the briefing until you add them here.
+#
+# The 8 suggested scopes below are a starting point — add, rename, or
+# remove any of them to match your life. _meta is reserved for mcp-brain
+# internal config (e.g. write-policy.md) and does not need a section.
 projects:
   work:
+    company: "Your Employer"
     repos:
-      - rtm-energy-connect
-      - rtm-edge-device
-      - rtm-device-api
-      - amrd-deployments
-      - sima-k8s
-      - device-monitor
-    infra: OVH k8s + docker-compose
+      - repo-one
+      - repo-two
+    infra: "k8s on <cloud>"
     notes: "MCP knows structure, does not deploy"
 
   school:
-    courses:
-      - power-electronics
-      - robotics
-      - digital-control
-      - rtos
+    institution: "Your University"
     current_semester: true
+    courses:
+      - course-one
+      - course-two
 
   homelab:
-    host: proxmox-supermicro
+    host: "homeserver-hostname"
     services:
-      - jellyfin
-      - immich
-      - arr-stack
-      - mcp-brain
+      - service-one
+      - service-two
 
+  life:
+    notes: "General personal assistant memory — preferences, routines, goals"
+
+  people:
+    notes: "CRM-style per-person files — one .md per person or group"
+
+  health:
+    notes: "Sleep, training, injuries, meds. Written only on explicit request."
+
+  finance:
+    notes: "Budget patterns, subscriptions. Never actual account balances."
+
+# Secrets live OUTSIDE mcp-brain — this section only describes *where*
+# each key can be found, never the value itself. `secrets_schema` tool
+# returns this structure to agents so they know where to send the user
+# to fetch a credential, without ever touching the credential itself.
 secrets_schema:
-  ovh:
-    keys: [OVH_API_KEY, OVH_SECRET, KUBECONFIG_PATH]
+  work:
+    keys: [API_KEY, API_SECRET]
     location: "1Password / vault: Work"
   homelab:
-    keys: [PROXMOX_TOKEN, DDNS_TOKEN]
+    keys: [ADMIN_TOKEN, DDNS_TOKEN]
     location: "1Password / vault: Homelab"
-  todoist:
-    keys: [TODOIST_API_TOKEN]
-    location: ".env on mcp-brain LXC"

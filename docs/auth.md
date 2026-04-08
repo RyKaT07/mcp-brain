@@ -57,6 +57,7 @@ For resources where read/write distinction does not apply (inbox, briefing, secr
 |---------------------|-------------------------------------------------------|
 | `knowledge_read`    | `knowledge:read:<scope>`                              |
 | `knowledge_update`  | `knowledge:write:<scope>`                             |
+| `knowledge_undo`    | `knowledge:write:*` (full write — partial tokens cannot undo) |
 | `knowledge_list`    | filters down to `<scope>` values the token can read   |
 | `inbox_list`        | `inbox:read`                                          |
 | `inbox_show`        | `inbox:read` (also reads from `_archive/`)            |

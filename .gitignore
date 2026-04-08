@@ -1,8 +1,7 @@
-# Knowledge data (personal, not in repo)
-knowledge/work/
-knowledge/school/
-knowledge/homelab/
-knowledge/inbox/
+# Knowledge data — every subdirectory is personal (work, school, life,
+# homelab, people, health, finance, _meta, inbox, and any future scopes).
+# Only the meta.yaml.example template is checked in.
+knowledge/*/
 knowledge/meta.yaml
 
 # Keep directory structure
