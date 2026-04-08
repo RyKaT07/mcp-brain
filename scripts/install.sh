@@ -17,7 +17,13 @@ set -euo pipefail
 INSTALL_DIR="${MCP_BRAIN_INSTALL_DIR:-/opt/mcp-brain}"
 GITHUB_REPO="${MCP_BRAIN_REPO:-RyKaT07/mcp-brain}"
 GITHUB_BRANCH="${MCP_BRAIN_BRANCH:-main}"
-IMAGE="${MCP_BRAIN_IMAGE:-ghcr.io/${GITHUB_REPO}:latest}"
+# GitHub repo paths are case-insensitive (GitHub treats owner case as
+# display-only), but Docker/OCI image references MUST be lowercase or
+# the client rejects them with 'invalid reference format'. Lowercase
+# the repo path only for the image reference; leave GITHUB_REPO itself
+# alone so raw.githubusercontent.com paths keep working with either case.
+GITHUB_REPO_LOWER="$(printf '%s' "${GITHUB_REPO}" | tr '[:upper:]' '[:lower:]')"
+IMAGE="${MCP_BRAIN_IMAGE:-ghcr.io/${GITHUB_REPO_LOWER}:latest}"
 RAW_BASE="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 COLOR_RED=$'\033[31m'
@@ -93,8 +99,13 @@ write_compose() {
     if ! curl -fsSL "${RAW_BASE}/docker-compose.yml" -o "${dest}.tmp"; then
         fail "could not download docker-compose.yml — check MCP_BRAIN_REPO"
     fi
-    # Pin the image to whatever this installer was built against
-    sed -i "s|image: \${MCP_BRAIN_IMAGE:-ghcr.io/RyKaT07/mcp-brain:latest}|image: ${IMAGE}|" "${dest}.tmp"
+    # Pin the image to whatever this installer was built against.
+    # Match any 'image:' line inside the compose file rather than a
+    # specific string — the upstream compose file has a default
+    # ${MCP_BRAIN_IMAGE:-...} that references the repo with its
+    # original case, but Docker demands lowercase at pull time, so
+    # we overwrite the whole image line with the lowercased IMAGE.
+    sed -E -i "s|^([[:space:]]*)image:.*|\1image: ${IMAGE}|" "${dest}.tmp"
     mv "${dest}.tmp" "${dest}"
 }
 
