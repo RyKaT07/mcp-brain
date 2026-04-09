@@ -19,6 +19,12 @@ config.yaml
 config/auth.yaml
 data/
 
+# Personal / maintainer-only context — never committed.
+# The project-level CLAUDE.md contains references to the maintainer's
+# workflow and other private notes; the public-facing equivalent is
+# README.md + docs/.
+CLAUDE.md
+
 # Lock files from knowledge writes
 *.lock
 
