@@ -69,17 +69,32 @@ bash <(curl -fsSL https://raw.githubusercontent.com/RyKaT07/mcp-brain/main/scrip
 
 What it does:
 
-1. `apt install` for missing packages (curl, openssl, xxd, ca-certificates)
+1. `apt install` for missing packages (curl, openssl, xxd, ca-certificates, git)
 2. Installs Docker via `https://get.docker.com` if it is not already there
 3. Creates `/opt/mcp-brain/{,data,data/knowledge}`
 4. Downloads `docker-compose.yml` from the repo and pins the image tag
 5. Generates `tok_<32 hex>` and writes it into `/opt/mcp-brain/data/auth.yaml` (chmod 600)
-6. `git init` inside `data/knowledge` (for auto-commit history)
-7. `docker compose pull && up -d`
-8. Probes `curl http://127.0.0.1:8400/healthz`
-9. **Prints the token to the screen once** — save it to your password manager immediately
+6. Generates a 256-bit OAuth admin secret and writes it into `/opt/mcp-brain/.env` as `MCP_OAUTH_ADMIN_SECRET` (required by the OAuth 2.1 authorization server that claude.ai Custom Connectors go through — see [`auth.md`](auth.md#oauth-mode))
+7. `git init` inside `data/knowledge` (for auto-commit history)
+8. `docker compose pull && up -d`
+9. Probes `curl http://127.0.0.1:8400/healthz`
+10. **Prints the bearer token AND the OAuth admin secret to the screen once** — save both to your password manager immediately
 
 When it finishes, the server listens on `127.0.0.1:8400`. It is not yet exposed to the world.
+
+### Upgrading an existing install to the OAuth flow
+
+If you installed mcp-brain before the OAuth 2.1 authorization server existed, your `/opt/mcp-brain/.env` file does not have `MCP_OAUTH_ADMIN_SECRET` yet and `docker compose up` will now refuse to start until you add one. Generate and append it:
+
+```bash
+cd /opt/mcp-brain
+echo "MCP_OAUTH_ADMIN_SECRET=$(openssl rand -hex 32)" >> .env
+chmod 600 .env
+docker compose pull
+docker compose up -d
+```
+
+Save the generated secret to your password manager. It is the secret you will enter on the consent page the first time you add a Custom Connector in claude.ai. Claude Code CLI (`~/.claude.json` with a static bearer) keeps working whether the admin secret is set or not — it goes through a different auth path.
 
 ## Reverse proxy (Caddy)
 
@@ -105,7 +120,7 @@ In OPNsense:
 2. **Firewall → Rules → WAN**: allow 443/tcp from any (Let's Encrypt and clients)
 3. **Services → Dynamic DNS**: configure DDNS for your domain
 
-## Connect Claude Code
+## Connect Claude Code (laptop CLI)
 
 Edit `~/.claude.json` (or a project-level `.claude.json`):
 
@@ -130,6 +145,48 @@ editing `~/.claude.json` so the new config is picked up; the
 `knowledge_*`, `inbox_*`, `get_briefing`, and `secrets_schema` tools
 should then be visible in the session.
 
+## Connect claude.ai (web / iOS / Android / desktop chat)
+
+claude.ai Custom Connectors (BETA) do not support static bearer
+headers — they speak OAuth 2.0. mcp-brain runs a minimal OAuth 2.1
+authorization server on the same domain to handle them. The setup
+is one-time per account (not per device — the connector syncs from
+your Claude account to every surface you sign in to).
+
+**Prerequisite:** `MCP_OAUTH_ADMIN_SECRET` is set in `/opt/mcp-brain/.env`
+on the LXC (the installer generates it on fresh installs; see
+[Upgrading an existing install](#upgrading-an-existing-install-to-the-oauth-flow)
+for how to add it to an older install).
+
+1. Sign in at [claude.ai](https://claude.ai) → **Settings → Connectors → Add custom connector**
+2. **Name:** `mcp-brain` (or whatever you prefer)
+3. **Remote MCP server URL:** `https://mcp.yourdomain.tld/mcp`
+4. **Leave OAuth Client ID and OAuth Client Secret EMPTY** — mcp-brain
+   supports Dynamic Client Registration (RFC 7591), so claude.ai will
+   register itself automatically on first use. Pre-filled credentials
+   would confuse the flow.
+5. Click **Add**. Your browser is redirected to `https://mcp.yourdomain.tld/oauth/consent?pending=...`
+6. The consent page shows the client name (`Claude` / `claude.ai`), a
+   random client ID, and a password field. Enter your `MCP_OAUTH_ADMIN_SECRET`
+   and click **Authorize**.
+7. Browser redirects back to claude.ai; the connector shows as active.
+8. Open a new chat and ask for something that should trigger an
+   mcp-brain tool ("what's in my briefing", "search my knowledge
+   for foo"). The tools appear in the session.
+
+Any device signed into the same Claude account (iOS, Android, desktop
+chat app) picks up the connector automatically — no separate setup
+per device. claude.ai stores a refresh token and quietly exchanges it
+for new access tokens in the background, so you only see the consent
+page the very first time (or after you explicitly disconnect and
+re-add the connector).
+
+**Rotating the admin secret:** edit `/opt/mcp-brain/.env`, replace
+`MCP_OAUTH_ADMIN_SECRET=...`, `docker compose restart`. Existing
+OAuth-issued tokens keep working (the secret only gates the consent
+page for new registrations). Full scope reference and the rationale
+behind this split-brain auth model are in [`auth.md`](auth.md).
+
 ## Update
 
 ```bash
@@ -149,7 +206,9 @@ That is just `docker compose pull && up -d`. Takes ~10 seconds. See [`upgrade.md
 Worth backing up from the LXC:
 
 - `/opt/mcp-brain/data/knowledge/` — your KB (the directory plus its `.git`)
-- `/opt/mcp-brain/data/auth.yaml` — tokens (or just keep them in 1Password)
+- `/opt/mcp-brain/data/auth.yaml` — yaml bearer tokens (or just keep them in 1Password)
+- `/opt/mcp-brain/data/oauth-state.json` — OAuth-issued tokens + registered claude.ai clients. Losing this just means every claude.ai device needs to re-run the Custom Connector setup flow; it is not a disaster, but backing it up avoids the consent-page step after a restore.
+- `/opt/mcp-brain/.env` — includes `MCP_OAUTH_ADMIN_SECRET`. Treat like `auth.yaml`: password manager + off-host backup.
 
 `docker-compose.yml` and the image are reproducible from the repo.
 

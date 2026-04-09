@@ -162,6 +162,34 @@ cmd_install() {
         chown -R 1000:1000 "${INSTALL_DIR}/data/knowledge/.git" 2>/dev/null || true
     fi
 
+    # --- OAuth admin secret ---
+    # Required by the OAuth 2.1 authorization server that claude.ai
+    # Custom Connectors (web/iOS/Android/desktop chat) go through.
+    # We generate it here on fresh installs and print it once, same
+    # as the yaml bearer token above. If .env already has the key
+    # (upgrade path), we leave it alone.
+    local env_file="${INSTALL_DIR}/.env"
+    if ! grep -q '^MCP_OAUTH_ADMIN_SECRET=' "$env_file" 2>/dev/null; then
+        local oauth_secret
+        oauth_secret="$(openssl rand -hex 32)"
+        printf 'MCP_OAUTH_ADMIN_SECRET=%s\n' "$oauth_secret" >> "$env_file"
+        chmod 600 "$env_file"
+        chown 1000:1000 "$env_file" 2>/dev/null || true
+        ok "generated MCP_OAUTH_ADMIN_SECRET and wrote it to ${env_file}"
+        echo
+        echo "${COLOR_YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${COLOR_RESET}"
+        echo "${COLOR_YELLOW}  SAVE THIS OAUTH ADMIN SECRET — shown once:${COLOR_RESET}"
+        echo
+        echo "    ${oauth_secret}"
+        echo
+        echo "  You enter this in the browser consent form the first"
+        echo "  time you add mcp-brain as a Custom Connector in claude.ai."
+        echo "${COLOR_YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${COLOR_RESET}"
+        echo
+    else
+        log "MCP_OAUTH_ADMIN_SECRET already present in .env, leaving as-is"
+    fi
+
     log "pulling image ${IMAGE}"
     (cd "${INSTALL_DIR}" && docker compose pull)
 

@@ -1,8 +1,9 @@
 # mcp-brain — production compose
 #
 # Mounts:
-#   ./data/knowledge → /data/knowledge   (markdown KB, git-tracked, RW)
-#   ./data/auth.yaml → /data/auth.yaml   (bearer tokens, RO)
+#   ./data/knowledge        → /data/knowledge        (markdown KB, git-tracked, RW)
+#   ./data/auth.yaml        → /data/auth.yaml        (yaml bearer tokens, RO)
+#   ./data/oauth-state.json → /data/oauth-state.json (OAuth-issued tokens + clients, RW)
 #
 # Default port binding is 127.0.0.1:8400 — terminate TLS in your reverse
 # proxy (Caddy / Traefik / nginx) and forward there. To expose directly,
@@ -23,8 +24,18 @@ services:
       MCP_KNOWLEDGE_DIR: /data/knowledge
       MCP_AUTH_CONFIG: /data/auth.yaml
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:8400/}
+      # OAuth 2.1 authorization server state — required for claude.ai
+      # Custom Connectors (web/iOS/Android/desktop chat). Without these
+      # the server still runs but the OAuth flow fails at the consent
+      # step; static yaml bearer tokens keep working for Claude Code CLI.
+      MCP_OAUTH_STORE: /data/oauth-state.json
+      MCP_OAUTH_ADMIN_SECRET: ${MCP_OAUTH_ADMIN_SECRET:?MCP_OAUTH_ADMIN_SECRET must be set in .env — generate via openssl rand -hex 32}
     volumes:
-      - ./data/knowledge:/data/knowledge
+      # Bind-mount the whole /data dir so oauth-state.json can be
+      # created by the container user (uid 1000) on first run. The
+      # individual auth.yaml bind-mount above is kept read-only as an
+      # extra guard against accidental writes.
+      - ./data:/data
       - ./data/auth.yaml:/data/auth.yaml:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8400/healthz"]
