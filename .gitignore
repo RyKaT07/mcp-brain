@@ -19,6 +19,12 @@ config.yaml
 config/auth.yaml
 data/
 
+# OAuth state — issued access/refresh tokens, registered clients.
+# Redundant because `data/` is already ignored, but listed explicitly
+# so it's clear this file exists and must never be committed. Edit
+# by hand only to manually revoke a claude.ai device.
+data/oauth-state.json
+
 # Personal / maintainer-only context — never committed.
 # The project-level CLAUDE.md contains references to the maintainer's
 # workflow and other private notes; the public-facing equivalent is

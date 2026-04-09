@@ -27,10 +27,11 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from mcp.server.auth.settings import AuthSettings
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import YamlTokenVerifier
+from mcp_brain.oauth import ChainedProvider, register_oauth_consent_route
 from mcp_brain.tools.briefing import register_briefing_tools
 from mcp_brain.tools.inbox import register_inbox_tools
 from mcp_brain.tools.knowledge import register_knowledge_tools
@@ -38,6 +39,8 @@ from mcp_brain.tools.secrets_schema import register_secrets_tools
 
 KNOWLEDGE_DIR = Path(os.getenv("MCP_KNOWLEDGE_DIR", "./knowledge"))
 AUTH_CONFIG_PATH = Path(os.getenv("MCP_AUTH_CONFIG", "./config/auth.yaml"))
+OAUTH_STORE_PATH = Path(os.getenv("MCP_OAUTH_STORE", "./data/oauth-state.json"))
+OAUTH_ADMIN_SECRET = os.getenv("MCP_OAUTH_ADMIN_SECRET", "")
 HOST = os.getenv("MCP_HOST", "0.0.0.0")
 PORT = int(os.getenv("MCP_PORT", "8400"))
 PUBLIC_URL = os.getenv("MCP_PUBLIC_URL", f"http://localhost:{PORT}/")
@@ -71,7 +74,22 @@ def _load_instructions(knowledge_dir: Path) -> str | None:
 
 
 def _build_mcp() -> FastMCP:
-    """Construct the FastMCP instance, with bearer auth on HTTP only."""
+    """Construct the FastMCP instance, with bearer auth on HTTP only.
+
+    HTTP mode: we switch from the simple `token_verifier=` path to
+    `auth_server_provider=ChainedProvider`. ChainedProvider implements
+    the OAuthAuthorizationServerProvider Protocol so FastMCP wires in
+    the full OAuth flow (DCR, /authorize, /token, metadata endpoints)
+    for claude.ai Custom Connectors. Internally, ChainedProvider still
+    delegates to YamlTokenVerifier for legacy yaml-configured bearers,
+    so the laptop CLI path is unchanged. FastMCP's constructor rejects
+    passing both `token_verifier` and `auth_server_provider`, so the
+    yaml verifier is wrapped inside ChainedProvider rather than passed
+    directly.
+
+    Stdio mode: unchanged. No HTTP, no auth, tools see no access token
+    and fall back to god-mode via `_perms._current_scopes()`.
+    """
     instructions = _load_instructions(KNOWLEDGE_DIR)
 
     if TRANSPORT == "stdio":
@@ -83,18 +101,35 @@ def _build_mcp() -> FastMCP:
             instructions=instructions,
         )
     else:
-        verifier = YamlTokenVerifier(AUTH_CONFIG_PATH)
+        yaml_verifier = YamlTokenVerifier(AUTH_CONFIG_PATH)
+        provider = ChainedProvider(
+            store_path=OAUTH_STORE_PATH,
+            yaml_verifier=yaml_verifier,
+            admin_secret=OAUTH_ADMIN_SECRET,
+            public_url=PUBLIC_URL,
+        )
+        resource_server_url = str(PUBLIC_URL).rstrip("/") + "/mcp"
         mcp = FastMCP(
             "mcp-brain",
             host=HOST,
             port=PORT,
             instructions=instructions,
-            token_verifier=verifier,
+            auth_server_provider=provider,
             auth=AuthSettings(
                 issuer_url=PUBLIC_URL,  # type: ignore[arg-type]
-                resource_server_url=PUBLIC_URL,  # type: ignore[arg-type]
+                resource_server_url=resource_server_url,  # type: ignore[arg-type]
+                client_registration_options=ClientRegistrationOptions(
+                    enabled=True,
+                    default_scopes=["*"],
+                    valid_scopes=None,
+                ),
             ),
         )
+        # Custom consent page for the browser step of the OAuth flow.
+        # Must be registered before `streamable_http_app()` is called
+        # (i.e. before _build_app()) because custom routes are appended
+        # to the inner Starlette at app-build time.
+        register_oauth_consent_route(mcp, provider)
 
     register_knowledge_tools(mcp, KNOWLEDGE_DIR)
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
