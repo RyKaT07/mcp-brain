@@ -154,7 +154,7 @@ There is no deny list — removing a token from the YAML invalidates it the mome
 Plain uvicorn logs show:
 
 - Client IP
-- Request line (`GET /sse`, `POST /messages/...`)
+- Request line (`POST /mcp`, etc.)
 - Status code (200, 401)
 
 Beyond MVP: I plan to add structured logging with `tool name + token.id` per call. Minimal for now.

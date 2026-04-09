@@ -10,8 +10,9 @@ mcp.yourdomain.tld {
     # is on a different host, or 127.0.0.1:8400 if it shares the LXC.
     reverse_proxy 10.0.0.42:8400
 
-    # Helpful headers for SSE — Caddy handles long-lived connections fine
-    # but you can lengthen the timeout if you see disconnects.
+    # Streamable HTTP can use long-lived chunked responses — Caddy
+    # handles them fine out of the box, but you can lengthen the
+    # upstream read timeout if you see disconnects on long tool calls.
     # reverse_proxy 10.0.0.42:8400 {
     #     transport http {
     #         read_timeout 1h
@@ -19,7 +20,7 @@ mcp.yourdomain.tld {
     # }
 
     # Optional: rate-limit accidental hammering. Tune to taste.
-    # @api path /sse /messages*
+    # @api path /mcp
     # rate_limit @api {
     #     zone mcp 100r/m
     # }

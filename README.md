@@ -9,7 +9,7 @@ Personal MCP server for persistent AI memory across sessions. Multi-token bearer
 - **Briefing** — context loader from `meta.yaml` for session bootstrap
 - **Secrets schema** — knows what secrets exist and where, never knows the values
 - **Multi-token auth** — different tokens grant different permissions (full / school-only / homelab read-only / etc.)
-- **SSE over HTTPS** — works remotely, one Bearer header in the client's MCP config
+- **Streamable HTTP over HTTPS** — works remotely, one Bearer header in the client's MCP config
 
 ## Quick start (Proxmox VE host)
 
@@ -52,8 +52,8 @@ Takes a few seconds. Knowledge and tokens live in volume mounts, so rollbacks ar
 {
   "mcpServers": {
     "brain": {
-      "type": "sse",
-      "url": "https://mcp.yourdomain.tld/sse",
+      "type": "http",
+      "url": "https://mcp.yourdomain.tld/mcp",
       "headers": {
         "Authorization": "Bearer tok_YOUR_TOKEN"
       }
@@ -133,7 +133,7 @@ Client (Claude Code / Cursor / custom GPT / n8n)
 Caddy (TLS termination, no auth)
   │
   ▼
-mcp-brain (FastMCP, SSE, multi-token bearer auth)
+mcp-brain (FastMCP, Streamable HTTP, multi-token bearer auth)
   ├── /data/knowledge/          ← markdown KB, git-tracked, bind-mounted
   ├── /data/auth.yaml           ← bearer tokens (read-only mount)
   └── meta.yaml in knowledge/   ← user profile + secrets_schema
@@ -152,7 +152,7 @@ cp knowledge/meta.yaml.example knowledge/meta.yaml
 # stdio mode bypasses auth — handy for local testing with the MCP CLI
 MCP_TRANSPORT=stdio mcp-brain
 
-# or SSE with auth
+# or Streamable HTTP with auth (default)
 MCP_AUTH_CONFIG=config/auth.yaml mcp-brain
 ```
 
