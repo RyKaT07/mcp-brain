@@ -31,7 +31,7 @@ from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import YamlTokenVerifier
-from mcp_brain.oauth import ChainedProvider
+from mcp_brain.oauth import ChainedProvider, register_oauth_consent_route
 from mcp_brain.tools.briefing import register_briefing_tools
 from mcp_brain.tools.inbox import register_inbox_tools
 from mcp_brain.tools.knowledge import register_knowledge_tools
@@ -125,6 +125,11 @@ def _build_mcp() -> FastMCP:
                 ),
             ),
         )
+        # Custom consent page for the browser step of the OAuth flow.
+        # Must be registered before `streamable_http_app()` is called
+        # (i.e. before _build_app()) because custom routes are appended
+        # to the inner Starlette at app-build time.
+        register_oauth_consent_route(mcp, provider)
 
     register_knowledge_tools(mcp, KNOWLEDGE_DIR)
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
