@@ -249,6 +249,38 @@ Next steps
 EOF
 }
 
+_has_port_binding_regression() {
+    # Detect the specific regression we hit on 2026-04-09: an install
+    # whose OLD compose binds port 8400 bare ("8400:8400" == 0.0.0.0,
+    # meaning the LXC listens on the LAN interface for a cross-host
+    # Caddy) is about to be overwritten by a NEW compose whose port
+    # line defaults to 127.0.0.1 via ${MCP_PORT_BIND:-127.0.0.1}, AND
+    # the .env file does NOT explicitly pin MCP_PORT_BIND. After the
+    # update the container would re-bind to loopback, Caddy would
+    # return 502, and the operator would not notice until external
+    # clients complain.
+    #
+    # Returns 0 (true, regression present) or 1 (false, safe to apply).
+    #
+    # Args: old_compose new_compose env_file
+    local old_compose="$1"
+    local new_compose="$2"
+    local env_file="$3"
+
+    # Old compose has a bare port mapping? (no IP prefix → 0.0.0.0)
+    grep -qE '^[[:space:]]*-[[:space:]]*"8400:8400"' "$old_compose" || return 1
+
+    # New compose uses MCP_PORT_BIND with the 127.0.0.1 default?
+    grep -q 'MCP_PORT_BIND:-127\.0\.0\.1' "$new_compose" || return 1
+
+    # .env doesn't already pin MCP_PORT_BIND explicitly?
+    if [ -f "$env_file" ] && grep -qE '^MCP_PORT_BIND=' "$env_file"; then
+        return 1
+    fi
+
+    return 0
+}
+
 cmd_update() {
     require_root "$@"
     [ -f "${INSTALL_DIR}/docker-compose.yml" ] || fail "not installed at ${INSTALL_DIR}"
@@ -303,6 +335,43 @@ cmd_update() {
             esac
         fi
 
+        # Port binding regression check. Must run BEFORE the compose
+        # swap so that the resulting `docker compose up -d` picks up
+        # both the new compose and the new .env in the same recreation.
+        if _has_port_binding_regression "$current" "$next" "${INSTALL_DIR}/.env"; then
+            echo
+            warn "PORT BINDING REGRESSION DETECTED"
+            warn "  current compose binds port 8400 on 0.0.0.0 (all interfaces)"
+            warn "  new compose defaults to 127.0.0.1 (loopback only)"
+            warn "  .env does not pin MCP_PORT_BIND"
+            warn ""
+            warn "If your reverse proxy (Caddy/Traefik/nginx) runs outside"
+            warn "this LXC — on the Proxmox host, in a separate Caddy LXC,"
+            warn "etc. — applying the new compose as-is will drop external"
+            warn "reachability the moment the container restarts."
+            echo
+
+            if [ "$auto_yes" -eq 1 ]; then
+                log "appending MCP_PORT_BIND=0.0.0.0 to .env (--yes)"
+                echo 'MCP_PORT_BIND=0.0.0.0' >> "${INSTALL_DIR}/.env"
+                ok "wrote MCP_PORT_BIND=0.0.0.0 to ${INSTALL_DIR}/.env"
+            else
+                printf 'Append MCP_PORT_BIND=0.0.0.0 to .env to preserve current binding? [Y/n] '
+                local port_reply
+                read -r port_reply
+                case "$port_reply" in
+                    n|N|no|NO)
+                        warn "leaving .env unchanged — external reachability will likely break until MCP_PORT_BIND is set manually"
+                        ;;
+                    *)
+                        echo 'MCP_PORT_BIND=0.0.0.0' >> "${INSTALL_DIR}/.env"
+                        ok "wrote MCP_PORT_BIND=0.0.0.0 to ${INSTALL_DIR}/.env"
+                        ;;
+                esac
+            fi
+            echo
+        fi
+
         # Back up the old compose next to its replacement so a bad
         # upstream change can be rolled back by hand with one mv.
         cp -p "$current" "${current}.bak"
@@ -317,6 +386,83 @@ cmd_update() {
     sleep 2
     (cd "${INSTALL_DIR}" && docker compose ps)
     ok "update complete"
+
+    # Self-sync install.sh itself. Parallels the compose re-sync above:
+    # pulls the current upstream script, diffs it against the running
+    # one, prompts, and swaps on accept. The new script takes effect
+    # on the NEXT invocation — we deliberately do NOT re-exec mid-flow
+    # because doing so while preserving argv and avoiding loops is
+    # fragile and the operator can just re-run if they need the new
+    # logic immediately.
+    _self_sync_installer "$@"
+}
+
+_self_sync_installer() {
+    # Only runs when invoked from the canonical install path. If the
+    # operator is running install.sh from a dev clone, a one-off curl
+    # pipe, or anywhere else, we skip silently — we do not want to
+    # surprise-overwrite a working copy or a maintainer's WIP branch.
+    #
+    # Identity check uses `-ef` (same inode) instead of string
+    # comparison. This transparently follows symlinks on both sides,
+    # so `/usr/local/bin/mcp-brain-update → /opt/mcp-brain/scripts/install.sh`
+    # and paths that go through `/tmp → /private/tmp` (macOS) both
+    # resolve to the same file and the check passes.
+    local canonical="${INSTALL_DIR}/scripts/install.sh"
+    local self="${BASH_SOURCE[0]}"
+    if [ ! -f "$canonical" ] || ! [ "$self" -ef "$canonical" ]; then
+        log "skipping install.sh self-sync — running from $self, not $canonical"
+        return 0
+    fi
+
+    local next_script="${canonical}.new"
+
+    log "checking for updated install.sh from ${GITHUB_REPO}@${GITHUB_BRANCH}"
+    if ! curl -fsSL "${RAW_BASE}/scripts/install.sh" -o "$next_script"; then
+        warn "could not download install.sh — skipping self-sync"
+        return 0
+    fi
+
+    if cmp -s "$canonical" "$next_script"; then
+        log "install.sh already up to date"
+        rm -f "$next_script"
+        return 0
+    fi
+
+    echo
+    warn "install.sh has changed upstream — review diff below"
+    echo
+    diff -u "$canonical" "$next_script" || true
+    echo
+
+    local auto_yes=0
+    for arg in "$@"; do
+        case "$arg" in
+            -y|--yes) auto_yes=1 ;;
+        esac
+    done
+
+    if [ "$auto_yes" -eq 1 ]; then
+        log "applying new install.sh (--yes)"
+    else
+        printf 'Apply these install.sh changes? [y/N] '
+        local reply
+        read -r reply
+        case "$reply" in
+            y|Y|yes|YES)
+                ;;
+            *)
+                warn "keeping existing install.sh — next invocation will still use the old script"
+                rm -f "$next_script"
+                return 0
+                ;;
+        esac
+    fi
+
+    cp -p "$canonical" "${canonical}.bak"
+    mv "$next_script" "$canonical"
+    chmod +x "$canonical"
+    ok "install.sh updated — next run will use the new version (previous saved as install.sh.bak)"
 }
 
 cmd_print_token() {
