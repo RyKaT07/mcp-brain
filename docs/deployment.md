@@ -112,6 +112,35 @@ Caddy handles Let's Encrypt automatically as long as DNS points at your public I
 
 A fuller example lives in [`Caddyfile.example`](Caddyfile.example).
 
+### Port binding — same-host vs cross-host Caddy
+
+`docker-compose.yml` exposes port 8400 through the `MCP_PORT_BIND` env
+var (defaults to `127.0.0.1`). Which value you want depends on where
+your reverse proxy lives **relative to this LXC**:
+
+| Your setup                                                       | `MCP_PORT_BIND` in `.env` | Why                                                                                                |
+|------------------------------------------------------------------|---------------------------|----------------------------------------------------------------------------------------------------|
+| Caddy/Traefik/nginx runs **in the same LXC** as mcp-brain        | unset (→ `127.0.0.1`)     | Default. Safest. The port is only reachable from inside the LXC; nothing on the LAN can hit 8400. |
+| Caddy runs in a **separate LXC** and forwards to this LXC's IP   | `0.0.0.0`                 | The bind has to listen on the LAN interface for cross-LXC traffic to reach it.                    |
+| Caddy runs on the **Proxmox host** and forwards to the LXC's IP  | `0.0.0.0`                 | Same reason — host-to-LXC traffic uses the LAN IP, not `127.0.0.1`.                               |
+
+When you switch to `0.0.0.0`, **restrict access at the firewall level**
+(OPNsense rule, `iptables` on the host, etc.) — mcp-brain's bearer
+auth alone is not meant to be internet-facing. Only Caddy's IP should
+be allowed to reach port 8400.
+
+To apply a change:
+
+```bash
+cd /opt/mcp-brain
+vi .env                               # MCP_PORT_BIND=0.0.0.0
+docker compose down && docker compose up -d
+```
+
+`docker compose restart` is NOT enough — docker-compose only re-reads
+`.env` on `up`. If you flip `MCP_PORT_BIND` and nothing seems to
+change, that is almost always the reason.
+
 ## OPNsense — port forward
 
 In OPNsense:
