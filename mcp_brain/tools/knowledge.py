@@ -6,6 +6,7 @@ Git auto-commit after each write for history.
 """
 
 import fcntl
+import logging
 import re
 import subprocess
 from pathlib import Path
@@ -15,18 +16,65 @@ from mcp.server.fastmcp import FastMCP
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.tools._perms import ALL, allowed_subscopes, require
 
+logger = logging.getLogger(__name__)
 
-def _git_commit(knowledge_dir: Path, filepath: Path, message: str):
-    """Auto-commit a knowledge file change."""
+
+def _git_commit(knowledge_dir: Path, filepath: Path, message: str) -> None:
+    """Auto-commit a knowledge file change.
+
+    Runs `git add` then `git commit` for the given path. Failures used to
+    be swallowed silently with `capture_output=True` and no returncode
+    check, which masked a real production incident: an install where
+    `user.email`/`user.name` were never configured had every
+    `knowledge_update` write its file to disk and then silently fail to
+    commit, breaking history and `knowledge_undo` for days before anyone
+    noticed.
+
+    The fix: still capture stdout/stderr (we don't want git's output
+    polluting MCP responses), but check returncode and log a WARNING
+    with the captured stderr when something goes wrong. The write
+    itself still succeeds — we don't fail the tool call on a commit
+    error, because the file lives on disk regardless of git state and
+    losing the commit is recoverable via `install.sh repair-knowledge`,
+    while losing the write is not.
+
+    `git not installed` is the one case we still tolerate without
+    logging — `FileNotFoundError` from `subprocess.run` for missing
+    `git` binary is expected in stdio dev mode where the server runs
+    outside the container. There the auto-commit feature is opt-in
+    anyway and a missing binary is not a configuration bug.
+    """
     try:
-        subprocess.run(["git", "add", str(filepath)], cwd=knowledge_dir, capture_output=True)
-        subprocess.run(
+        add_result = subprocess.run(
+            ["git", "add", str(filepath)],
+            cwd=knowledge_dir,
+            capture_output=True,
+            text=True,
+        )
+        if add_result.returncode != 0:
+            logger.warning(
+                "git add failed for %s: %s",
+                filepath,
+                (add_result.stderr or add_result.stdout or "<no output>").strip(),
+            )
+            return  # don't try to commit something we couldn't stage
+
+        commit_result = subprocess.run(
             ["git", "commit", "-m", message, "--", str(filepath)],
             cwd=knowledge_dir,
             capture_output=True,
+            text=True,
         )
+        if commit_result.returncode != 0:
+            logger.warning(
+                "git commit failed for %s: %s. "
+                "File is on disk but not in history. "
+                "Run 'install.sh repair-knowledge' on the host to fix.",
+                filepath,
+                (commit_result.stderr or commit_result.stdout or "<no output>").strip(),
+            )
     except FileNotFoundError:
-        pass  # git not installed — skip silently
+        pass  # git not installed — stdio dev mode, skip silently
 
 
 def _parse_sections(content: str) -> dict[str, str]:

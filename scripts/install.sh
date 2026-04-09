@@ -6,6 +6,8 @@
 #   bash install.sh install
 #   bash install.sh update           # re-sync compose, then docker compose pull && up -d
 #   bash install.sh update --yes     # same, auto-accept compose diffs (unattended)
+#   bash install.sh repair-knowledge # fix broken knowledge git state (no HEAD,
+#                                    # missing user.email/.name, missing .gitignore)
 #   bash install.sh print-token      # print the first token's value
 #   bash install.sh status           # docker compose ps
 #   bash install.sh uninstall        # stop & remove (data preserved)
@@ -161,6 +163,19 @@ cmd_install() {
             git commit -q --allow-empty -m "init"
         ) || warn "knowledge git init failed — auto-commit history will not work until fixed"
         chown -R 1000:1000 "${INSTALL_DIR}/data/knowledge/.git" 2>/dev/null || true
+    fi
+
+    # Write a default .gitignore if there isn't one. *.lock files come
+    # from knowledge_update's fcntl.flock and would otherwise show up in
+    # `git status` forever; *.bak is for any backups the operator (or a
+    # repair script) leaves next to a file before editing.
+    local kgitignore="${INSTALL_DIR}/data/knowledge/.gitignore"
+    if [ ! -f "$kgitignore" ]; then
+        cat > "$kgitignore" <<'KGITIGNORE_EOF'
+*.lock
+*.bak
+KGITIGNORE_EOF
+        chown 1000:1000 "$kgitignore" 2>/dev/null || true
     fi
 
     # --- OAuth admin secret ---
@@ -329,16 +344,124 @@ cmd_uninstall() {
     warn "data preserved at ${INSTALL_DIR}/data — remove manually if you want it gone"
 }
 
+cmd_repair_knowledge() {
+    # Detect and fix a broken knowledge git repo. Designed for installs
+    # that predate the install.sh git-bootstrap step (or that hit some
+    # other transient breakage), where the directory exists but auto-
+    # commits silently fail. Idempotent: safe to run on a healthy install
+    # — every step is guarded by a "is this already correct?" check.
+    #
+    # Three failure modes this catches and fixes:
+    #
+    # 1. .git/ does not exist at all              → `git init`
+    # 2. user.email or user.name not configured   → `git config user.{email,name}`
+    #    (this is the silent killer — knowledge.py:_git_commit calls
+    #     `git commit` with capture_output=True and no returncode check,
+    #     so a "Please tell me who you are" error is swallowed and every
+    #     knowledge_update writes to disk without a commit, breaking
+    #     knowledge_undo and the entire history)
+    # 3. .gitignore missing                       → write *.lock + *.bak
+    # 4. HEAD ref does not exist (zero commits)   → empty bootstrap commit
+    #
+    # Side effect prevention: any git op we run as root touches the .git/
+    # index and changes its ownership to root, which then makes the next
+    # container-side `git add` (uid 1000) fail with "permission denied".
+    # We chown -R back to 1000:1000 at the end to undo any such damage.
+    require_root "$@"
+    local kdir="${INSTALL_DIR}/data/knowledge"
+    [ -d "$kdir" ] || fail "knowledge directory not found at $kdir — run 'install' first"
+
+    log "checking knowledge git repo at $kdir"
+
+    # Bypass git's safe.directory check for this run. The directory is
+    # owned by uid 1000 (the container user) but we're root on the host,
+    # which trips git's dubious-ownership refusal since git 2.35. We use
+    # a shell function (not a string variable) so the wildcard config
+    # value is always quoted properly and doesn't get glob-expanded by
+    # the shell — and so word-splitting rules don't matter.
+    kgit() {
+        git -c "safe.directory=*" -C "$kdir" "$@"
+    }
+
+    # 1. Init if missing entirely
+    if [ ! -d "$kdir/.git" ]; then
+        warn "no .git/ found — running git init -b main"
+        kgit init -q -b main
+        ok "git initialized"
+    fi
+
+    # 2. Configure user.email / user.name if missing
+    local current_email current_name
+    current_email="$(kgit config user.email 2>/dev/null || true)"
+    current_name="$(kgit config user.name 2>/dev/null || true)"
+    if [ -z "$current_email" ]; then
+        warn "user.email unset — configuring as mcp-brain@localhost"
+        kgit config user.email "mcp-brain@localhost"
+    else
+        log "user.email already set ($current_email)"
+    fi
+    if [ -z "$current_name" ]; then
+        warn "user.name unset — configuring as mcp-brain"
+        kgit config user.name "mcp-brain"
+    else
+        log "user.name already set ($current_name)"
+    fi
+
+    # 3. Default .gitignore if missing
+    local kgitignore="$kdir/.gitignore"
+    if [ ! -f "$kgitignore" ]; then
+        warn ".gitignore missing — writing default (*.lock, *.bak)"
+        cat > "$kgitignore" <<'KGITIGNORE_EOF'
+*.lock
+*.bak
+KGITIGNORE_EOF
+    else
+        log ".gitignore already present"
+    fi
+
+    # 4. Initial commit if HEAD does not yet resolve. We deliberately
+    #    create an EMPTY commit instead of staging existing files,
+    #    because in a broken-state install some of the on-disk files
+    #    may be test data the operator wants to remove (and would not
+    #    want pinned in history). The next real knowledge_update will
+    #    commit a meaningful change on top.
+    if ! kgit rev-parse HEAD >/dev/null 2>&1; then
+        warn "no HEAD ref — creating empty bootstrap commit"
+        kgit commit -q --allow-empty -m "init: bootstrap empty repo"
+        ok "initial commit created"
+    else
+        log "HEAD already exists, no bootstrap needed"
+    fi
+
+    # 5. Hand ownership of .git/ + .gitignore back to the container user.
+    #    Critical for the silent-failure prevention: if .git/index ends up
+    #    root-owned, the next container-side git op fails with permission
+    #    denied — and because _git_commit swallows errors, the user only
+    #    notices when knowledge_undo says "no HEAD" days later.
+    chown -R 1000:1000 "$kdir/.git" 2>/dev/null || true
+    [ -f "$kgitignore" ] && chown 1000:1000 "$kgitignore" 2>/dev/null || true
+
+    # 6. Verify and report
+    local commit_count head_short
+    commit_count="$(kgit rev-list --count HEAD 2>/dev/null || echo 0)"
+    head_short="$(kgit rev-parse --short HEAD 2>/dev/null || echo '?')"
+    ok "knowledge git healthy: ${commit_count} commit(s), HEAD=${head_short}"
+    echo
+    echo "Restart the container so the server picks up the repaired state:"
+    echo "  cd ${INSTALL_DIR} && docker compose restart"
+}
+
 main() {
     local cmd="${1:-install}"
     case "$cmd" in
-        install)        shift || true; cmd_install "$@" ;;
-        update)         shift || true; cmd_update "$@" ;;
-        print-token)    cmd_print_token ;;
-        status)         cmd_status ;;
-        uninstall)      shift || true; cmd_uninstall "$@" ;;
-        -h|--help|help) sed -n '2,15p' "$0" ;;
-        *)              fail "unknown command: $cmd (try: install | update | print-token | status | uninstall)" ;;
+        install)            shift || true; cmd_install "$@" ;;
+        update)             shift || true; cmd_update "$@" ;;
+        repair-knowledge)   shift || true; cmd_repair_knowledge "$@" ;;
+        print-token)        cmd_print_token ;;
+        status)             cmd_status ;;
+        uninstall)          shift || true; cmd_uninstall "$@" ;;
+        -h|--help|help)     sed -n '2,16p' "$0" ;;
+        *)                  fail "unknown command: $cmd (try: install | update | repair-knowledge | print-token | status | uninstall)" ;;
     esac
 }
 
