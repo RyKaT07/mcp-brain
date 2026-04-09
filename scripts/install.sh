@@ -4,7 +4,8 @@
 # Usage:
 #   bash install.sh                  # install (default)
 #   bash install.sh install
-#   bash install.sh update           # docker compose pull && up -d
+#   bash install.sh update           # re-sync compose, then docker compose pull && up -d
+#   bash install.sh update --yes     # same, auto-accept compose diffs (unattended)
 #   bash install.sh print-token      # print the first token's value
 #   bash install.sh status           # docker compose ps
 #   bash install.sh uninstall        # stop & remove (data preserved)
@@ -236,6 +237,64 @@ EOF
 cmd_update() {
     require_root "$@"
     [ -f "${INSTALL_DIR}/docker-compose.yml" ] || fail "not installed at ${INSTALL_DIR}"
+
+    local auto_yes=0
+    for arg in "$@"; do
+        case "$arg" in
+            -y|--yes) auto_yes=1 ;;
+        esac
+    done
+
+    # Re-sync docker-compose.yml. In the past this file was written
+    # once at install time and never touched again, which meant a
+    # new image that required a new env var (the OAuth rollout is
+    # the canonical example) would land in a running container whose
+    # compose file did not wire that var through — silent failure.
+    # We now always fetch the upstream compose, re-pin the image line,
+    # diff against the on-disk file, and surface any change so the
+    # operator can review before applying. Skipped on no-op.
+    local current="${INSTALL_DIR}/docker-compose.yml"
+    local next="${INSTALL_DIR}/docker-compose.yml.new"
+
+    log "fetching latest docker-compose.yml from ${GITHUB_REPO}@${GITHUB_BRANCH}"
+    if ! curl -fsSL "${RAW_BASE}/docker-compose.yml" -o "$next"; then
+        fail "could not download docker-compose.yml — check MCP_BRAIN_REPO"
+    fi
+    sed -E -i "s|^([[:space:]]*)image:.*|\1image: ${IMAGE}|" "$next"
+
+    if cmp -s "$current" "$next"; then
+        log "compose file unchanged, keeping as-is"
+        rm -f "$next"
+    else
+        warn "docker-compose.yml has changed upstream — review diff below"
+        echo
+        diff -u "$current" "$next" || true
+        echo
+
+        if [ "$auto_yes" -eq 1 ]; then
+            log "applying new compose (--yes)"
+        else
+            printf 'Apply these compose changes? [y/N] '
+            local reply
+            read -r reply
+            case "$reply" in
+                y|Y|yes|YES)
+                    ;;
+                *)
+                    warn "keeping existing compose file — update aborted before image pull"
+                    rm -f "$next"
+                    return 0
+                    ;;
+            esac
+        fi
+
+        # Back up the old compose next to its replacement so a bad
+        # upstream change can be rolled back by hand with one mv.
+        cp -p "$current" "${current}.bak"
+        mv "$next" "$current"
+        ok "compose updated — previous version saved as $(basename "$current").bak"
+    fi
+
     log "pulling latest image"
     (cd "${INSTALL_DIR}" && docker compose pull)
     log "restarting"
