@@ -20,13 +20,15 @@ What it does, in order:
 2. Compares it against `/opt/mcp-brain/docker-compose.yml`:
    - **No change** → the existing file is kept as-is, no prompt.
    - **Change** → the diff is printed and you are prompted `Apply these compose changes? [y/N]`. Saying no aborts the update before the image is even pulled. Saying yes replaces `docker-compose.yml` with the new version and saves the previous one as `docker-compose.yml.bak` next to it.
-3. `docker compose pull` — pulls the current image tag.
-4. `docker compose up -d` — recreates the container with the (possibly updated) compose.
-5. Prints `docker compose ps`.
+3. **Port binding regression guard.** If the compose change would flip the effective port binding from `0.0.0.0` to `127.0.0.1` AND `.env` does not already pin `MCP_PORT_BIND`, the installer warns and prompts `Append MCP_PORT_BIND=0.0.0.0 to .env to preserve current binding? [Y/n]`. Default is yes — this exists specifically to catch the case where a cross-host Caddy (running in a separate LXC or on the Proxmox host) would lose reachability after the compose swap. Operators with a same-LXC reverse proxy can answer no without consequence.
+4. `docker compose pull` — pulls the current image tag.
+5. `docker compose up -d` — recreates the container with the (possibly updated) compose + .env.
+6. Prints `docker compose ps`.
+7. **Self-sync `install.sh`.** Fetches the current upstream installer, diffs against the running copy at `/opt/mcp-brain/scripts/install.sh`, and (on accept) swaps it — preserving the old version as `install.sh.bak`. The new version takes effect on the **next** invocation. If you are running the installer from anywhere other than the canonical path (dev clone, one-off `curl` pipe, etc.), this step is skipped silently to avoid surprise overwrites of working copies.
 
-The compose re-sync step exists because new releases occasionally add required env vars (the OAuth rollout added `MCP_OAUTH_ADMIN_SECRET`), and pulling a new image against a stale compose that does not wire the variable through is a silent failure mode. Always re-syncing — with a diff — catches that before it causes downtime.
+The compose re-sync step exists because new releases occasionally add required env vars (the OAuth rollout added `MCP_OAUTH_ADMIN_SECRET`), and pulling a new image against a stale compose that does not wire the variable through is a silent failure mode. Always re-syncing — with a diff — catches that before it causes downtime. The port binding guard and the installer self-sync exist for the same reason: silently changing externally-visible behavior (port binding) or silently leaving the operator with a stale script (missing subcommands from main) are both recipes for confusion weeks later.
 
-For unattended upgrades (cron, CI), add `--yes` to auto-accept any compose diffs:
+For unattended upgrades (cron, CI), add `--yes` to auto-accept compose diffs, the port binding prompt, and the installer self-sync prompt:
 
 ```bash
 sudo bash /opt/mcp-brain/scripts/install.sh update --yes
