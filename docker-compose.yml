@@ -17,7 +17,7 @@ services:
     ports:
       - "127.0.0.1:8400:8400"
     environment:
-      MCP_TRANSPORT: sse
+      MCP_TRANSPORT: http
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8400"
       MCP_KNOWLEDGE_DIR: /data/knowledge

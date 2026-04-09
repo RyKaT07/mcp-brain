@@ -358,8 +358,8 @@ Next steps
      {
        "mcpServers": {
          "brain": {
-           "type": "sse",
-           "url": "https://your.domain.tld/sse",
+           "type": "http",
+           "url": "https://your.domain.tld/mcp",
            "headers": { "Authorization": "Bearer ${MCP_TOKEN:-<TOKEN>}" }
          }
        }

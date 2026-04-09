@@ -113,8 +113,8 @@ Edit `~/.claude.json` (or a project-level `.claude.json`):
 {
   "mcpServers": {
     "brain": {
-      "type": "sse",
-      "url": "https://mcp.yourdomain.tld/sse",
+      "type": "http",
+      "url": "https://mcp.yourdomain.tld/mcp",
       "headers": {
         "Authorization": "Bearer tok_YOUR_TOKEN"
       }
@@ -123,7 +123,12 @@ Edit `~/.claude.json` (or a project-level `.claude.json`):
 }
 ```
 
-Restart Claude Code and the `knowledge_*`, `inbox_*`, `get_briefing`, `secrets_schema` tools should be available.
+mcp-brain uses the Streamable HTTP transport. The public endpoint is
+`/mcp` on your domain; `/healthz` is unauthenticated and useful for
+uptime checks. Restart Claude Code fully (`Cmd+Q` on macOS) after
+editing `~/.claude.json` so the new config is picked up; the
+`knowledge_*`, `inbox_*`, `get_briefing`, and `secrets_schema` tools
+should then be visible in the session.
 
 ## Update
 
@@ -152,8 +157,11 @@ Easiest: an LXC snapshot in Proxmox once a week + a cron `restic backup /opt/mcp
 
 ## Troubleshooting
 
-**`/healthz` returns 200 but `/sse` returns 401 with a valid token**
+**`/healthz` returns 200 but `/mcp` returns 401 with a valid token**
 Check that the header is `Authorization: Bearer ` (with a space), not `Bearer:`. And that the token in the header is literally identical to the token in `auth.yaml`, no quotes.
+
+**Client says `type: sse` server is deprecated or tools do not load**
+mcp-brain migrated from SSE to Streamable HTTP transport. Update your client config to use `"type": "http"` and point the URL at `/mcp` (not `/sse`). SSE is dead in the MCP spec as of 2026.
 
 **Docker starts but does not work in the LXC (cgroup error)**
 Enable `Nesting` in container options (Proxmox → CT → Options → Features). Restart the LXC.
