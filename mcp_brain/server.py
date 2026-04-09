@@ -73,6 +73,69 @@ def _load_instructions(knowledge_dir: Path) -> str | None:
     return content or None
 
 
+def _extract_h2_section(markdown: str, title: str) -> str:
+    """Extract the body of a specific H2 section from a markdown document.
+
+    Returns the lines between `## {title}` and the next `## ...` (or EOF),
+    excluding the `## {title}` header itself. Matching is case-insensitive
+    on the title text; whitespace around the `## ` prefix is tolerated but
+    the heading must be H2 (not H1 or H3).
+
+    Empty string if the section is missing. Used to pull targeted
+    subsections out of the user's `_meta/write-policy.md` for injection
+    into specific tool descriptions — see `_load_tool_policy` below.
+    """
+    target = title.strip().lower()
+    in_section = False
+    buf: list[str] = []
+    for line in markdown.splitlines():
+        if line.startswith("## "):
+            heading = line[3:].strip().lower()
+            if in_section:
+                break  # next H2 ends the section
+            if heading == target:
+                in_section = True
+                continue
+        if in_section:
+            buf.append(line)
+    return "\n".join(buf).strip()
+
+
+def _load_tool_policy(knowledge_dir: Path) -> str:
+    """Load the `## Tool policy` section from `_meta/write-policy.md`, if any.
+
+    Motivation: MCP `InitializeResult.instructions` (see `_load_instructions`
+    above) is the canonical channel for server-wide behavioral rules, but
+    not every client honors it. Claude Code CLI prepends the instructions
+    to its system prompt verbatim and follows them faithfully. claude.ai
+    web (via OAuth) was observed 2026-04-09 to receive the instructions,
+    acknowledge them as "server system prompt", and still write to the
+    knowledge store without following them — it appears to treat
+    per-server instructions as informational rather than binding.
+
+    Tool descriptions, by contrast, are part of the schema every MCP
+    client MUST pass through verbatim so the model knows how to call
+    the tool. Rules embedded there cannot be silently dropped.
+
+    This loader extracts the `## Tool policy` H2 from write-policy.md
+    (if present) and the server prepends it to the `knowledge_update`
+    tool description at registration time. Users who want tool-level
+    guardrails on claude.ai add this section to their policy file; users
+    who only care about Claude Code CLI can leave it out and rely on
+    `instructions` alone — this is purely additive.
+
+    Empty string if the file or the section is missing.
+    """
+    policy = knowledge_dir / "_meta" / "write-policy.md"
+    if not policy.exists():
+        return ""
+    try:
+        content = policy.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return _extract_h2_section(content, "Tool policy")
+
+
 def _build_mcp() -> FastMCP:
     """Construct the FastMCP instance, with bearer auth on HTTP only.
 
@@ -91,6 +154,7 @@ def _build_mcp() -> FastMCP:
     and fall back to god-mode via `_perms._current_scopes()`.
     """
     instructions = _load_instructions(KNOWLEDGE_DIR)
+    tool_policy = _load_tool_policy(KNOWLEDGE_DIR)
 
     if TRANSPORT == "stdio":
         # Local dev: no HTTP, no auth. Tools fall back to god-mode.
@@ -131,7 +195,7 @@ def _build_mcp() -> FastMCP:
         # to the inner Starlette at app-build time.
         register_oauth_consent_route(mcp, provider)
 
-    register_knowledge_tools(mcp, KNOWLEDGE_DIR)
+    register_knowledge_tools(mcp, KNOWLEDGE_DIR, tool_policy=tool_policy)
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
     register_briefing_tools(mcp, KNOWLEDGE_DIR)
     register_secrets_tools(mcp, KNOWLEDGE_DIR)

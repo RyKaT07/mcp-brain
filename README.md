@@ -141,6 +141,26 @@ copying a local config file around.
 - Your actual policy lives in your (gitignored) knowledge store, not in
   this repo — it's personal, not framework code.
 
+### `## Tool policy` — second channel for clients that ignore `instructions`
+
+Claude Code CLI honors `InitializeResult.instructions` faithfully.
+claude.ai web (via the OAuth Custom Connector flow) was observed to
+receive the same instructions, acknowledge them as "server system
+prompt", and still call `knowledge_update` without following the
+rules. Tool descriptions, on the other hand, are part of the schema
+every MCP client passes to the model verbatim, so rules embedded
+there cannot be silently dropped.
+
+If your `knowledge/_meta/write-policy.md` has a `## Tool policy` H2
+section, its body is extracted at startup and prepended to the
+`knowledge_update` tool's MCP description. This gives you a hard
+guardrail that reaches every client, not just those that honor
+per-server instructions. The section is optional — leave it out if
+you only use Claude Code CLI and `instructions` alone is enough.
+
+The example template in [`docs/write-policy.example.md`](docs/write-policy.example.md)
+includes a ready-to-copy `## Tool policy` block.
+
 ## Architecture
 
 ```

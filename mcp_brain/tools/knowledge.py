@@ -115,7 +115,50 @@ def _resolve_file(knowledge_dir: Path, scope: str, project: str) -> Path:
     return knowledge_dir / _sanitize(scope) / f"{_sanitize(project)}.md"
 
 
-def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
+_KNOWLEDGE_UPDATE_BASE_DESCRIPTION = """Update (or create) a specific section in a knowledge file.
+
+This replaces only the target H2 section, leaving all others untouched.
+Creates the file if it doesn't exist.
+
+Args:
+    scope: Category — 'work', 'school', or 'homelab'
+    project: Project/topic name
+    section: H2 section title to update (e.g. 'architecture', 'current_tasks')
+    content: New markdown content for that section (without the ## header)"""
+
+
+def _build_knowledge_update_description(tool_policy: str) -> str:
+    """Assemble the final MCP description string for knowledge_update.
+
+    If the server was able to load a `## Tool policy` section from
+    `_meta/write-policy.md`, prepend it to the canonical tool description
+    so the rules reach every client — including those that ignore
+    `InitializeResult.instructions`. If no tool policy is configured,
+    the canonical description alone is returned.
+    """
+    if not tool_policy.strip():
+        return _KNOWLEDGE_UPDATE_BASE_DESCRIPTION
+    return f"{tool_policy.strip()}\n\n---\n\n{_KNOWLEDGE_UPDATE_BASE_DESCRIPTION}"
+
+
+def register_knowledge_tools(
+    mcp: FastMCP,
+    knowledge_dir: Path,
+    *,
+    tool_policy: str = "",
+):
+    """Register knowledge_* tools on the MCP server.
+
+    `tool_policy` is the optional `## Tool policy` block loaded from
+    `_meta/write-policy.md` (see `mcp_brain.server._load_tool_policy`).
+    When non-empty it is prepended to the `knowledge_update` tool
+    description so the rules are visible to every MCP client, including
+    those that do not surface `InitializeResult.instructions` to the
+    model (notably claude.ai web). When empty, tool descriptions stay
+    at their baseline — no behavioral rules, just schema + args.
+    """
+
+    update_description = _build_knowledge_update_description(tool_policy)
 
     @mcp.tool()
     def knowledge_read(scope: str, project: str, section: str | None = None) -> str:
@@ -149,8 +192,12 @@ def register_knowledge_tools(mcp: FastMCP, knowledge_dir: Path):
             return f"## {section}\n{sections[section]}"
         return f"Section '{section}' not found. Available: {', '.join(s for s in sections if s != '_preamble')}"
 
-    @mcp.tool()
+    @mcp.tool(description=update_description)
     def knowledge_update(scope: str, project: str, section: str, content: str) -> str:
+        # The MCP-facing description comes from `update_description` above
+        # (baseline + optional `## Tool policy` prepend). This Python
+        # docstring is kept for humans reading the source only; FastMCP
+        # does not read it when `description=` is passed explicitly.
         """Update (or create) a specific section in a knowledge file.
 
         This replaces only the target H2 section, leaving all others untouched.
