@@ -210,6 +210,12 @@ Next steps
 1. Put a reverse proxy (Caddy) in front of port 8400 with TLS.
    See docs/Caddyfile.example in the repo.
 
+   Port 8400 is currently bound to 127.0.0.1 only (safest). If your
+   reverse proxy runs OUTSIDE this LXC (separate Caddy LXC, Caddy
+   on the Proxmox host, etc.), set MCP_PORT_BIND=0.0.0.0 in
+   ${INSTALL_DIR}/.env and run 'docker compose down && up -d'.
+   See docs/deployment.md § "Port binding — same-host vs cross-host".
+
 2. Add the server to Claude Code's MCP config (~/.claude.json):
 
    {
