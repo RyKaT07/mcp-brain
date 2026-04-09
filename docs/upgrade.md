@@ -46,6 +46,36 @@ docker compose up -d
 
 Only the most recent backup is kept (each update overwrites the previous `.bak`), so if you want to roll further back, use git on the repo and edit by hand.
 
+## Repairing a broken knowledge git repo
+
+If `knowledge_undo` returns `Git error: fatal: ambiguous argument 'HEAD'` (or similar), or if `docker compose logs mcp-brain` shows `git commit failed for ...` warnings, your knowledge git repo is in a broken state — typically because the install predates the git-bootstrap step in `install.sh` and was created without `user.email`/`user.name` configured. Symptoms:
+
+- `knowledge_update` writes files to disk fine, but they never reach git history.
+- `knowledge_undo` always fails with "no HEAD" because there are zero commits.
+- `git status` (on the host, with `safe.directory` bypass) shows `No commits yet` and a list of staged-but-uncommitted files.
+
+Run the repair subcommand:
+
+```bash
+sudo bash /opt/mcp-brain/scripts/install.sh repair-knowledge
+```
+
+What it does:
+
+1. `git init` if `.git/` is missing entirely.
+2. Sets `user.email`/`user.name` to `mcp-brain@localhost` / `mcp-brain` if either is unset (this is the actual root cause — without them every `git commit` returns "Please tell me who you are" and `_git_commit` swallowed that error before mcp-brain v1.28).
+3. Writes a default `.gitignore` (`*.lock`, `*.bak`) if missing.
+4. Creates an empty bootstrap commit if `HEAD` does not yet resolve, so the repo has at least one commit and `knowledge_undo` works.
+5. `chown -R 1000:1000 .git/` to undo any ownership damage left behind by host-side git operations (any git command run as root touches `.git/index` and changes its ownership, which then breaks the next container-side commit).
+
+The command is **idempotent** — every step is guarded by an "is this already fixed?" check, so it is safe to run on a healthy install (it will just report `knowledge git healthy` and exit). Restart the container afterwards so the server picks up the repaired config:
+
+```bash
+cd /opt/mcp-brain && docker compose restart
+```
+
+After repair, any test files left over from the broken-state period (e.g. `work/test.md` from interactive testing) are still on disk and untracked. Clean them up by hand if you want them gone — `repair-knowledge` deliberately does not auto-stage existing files because some of them may be data the operator wants to delete, not pin in history.
+
 ## Pinning a version
 
 By default `docker-compose.yml` pulls the `latest` tag from GHCR — i.e. the latest build from `main`. If you prefer to pin a specific release:
