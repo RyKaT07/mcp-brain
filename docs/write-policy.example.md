@@ -119,3 +119,59 @@ the whole point of inbox existing.
 - **Per-scope overrides.** Add rules like "for `work/`, always include
   the repo name in the section title" or "for `people/`, one file per
   person, name it `firstname-lastname.md`".
+
+---
+
+## Tool policy
+
+The content of **this** section gets injected directly into the MCP
+`description` field of the `knowledge_update` tool at server startup
+(see `mcp_brain/server.py::_load_tool_policy` + `_extract_h2_section`).
+
+**Why a second channel.** The `InitializeResult.instructions` mechanism
+described at the top of this file is the canonical place for server-wide
+rules, and Claude Code CLI honors it faithfully. But not every client
+does — claude.ai web was observed to receive the instructions, call them
+"server system prompt", and still write to the knowledge base without
+following them. Tool descriptions are part of the schema every client
+must pass through to the model verbatim, so rules embedded here cannot
+be silently ignored by an intermediate layer.
+
+Everything that follows is markdown pasted into the tool description
+verbatim — keep it short (a few hundred lines max) and phrased as
+rules the LLM is about to follow, not background explanation.
+
+### Before calling `knowledge_update`
+
+1. **Never call this tool unprompted.** Propose the save in chat first,
+   showing the exact section body that would land. Only call
+   `knowledge_update` after the user replies affirmatively ("yes",
+   "save", "ok", "go ahead", or an equivalent in their language). A
+   tangential reply, a deflection, or silence means skip — do not call.
+
+2. **Exception for direct save requests.** If the user explicitly asks
+   you to save ("save this to brain", "add that to notes", "put it in
+   work/foo"), call directly without a separate proposal step, but
+   still announce what you wrote afterwards.
+
+3. **Sensitive scopes require extra care.** For anything under
+   `health/`, `finance/`, or `homelab/`, always show the full proposed
+   content (not a summary) before writing. Never infer facts in these
+   scopes from conversational context — wait for an explicit user
+   request.
+
+### After calling `knowledge_update`
+
+End your reply with a compact footer so the user can verify and undo:
+
+> 📝 Saved to brain:
+> - `scope/project § section` — half-line description of what landed
+>
+> Reply "undo" to revert.
+
+One bullet per `knowledge_update` call in this turn. If the user's next
+reply says "undo", "revert", "delete that", or any clear equivalent,
+immediately call `knowledge_undo(steps=N)` where N is the number of
+`knowledge_update` calls in your most recent footer (default 1). Never
+re-save content the user just rejected in the same session — assume it
+was a deliberate rejection.
