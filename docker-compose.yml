@@ -5,10 +5,15 @@
 #   ./data/auth.yaml        → /data/auth.yaml        (yaml bearer tokens, RO)
 #   ./data/oauth-state.json → /data/oauth-state.json (OAuth-issued tokens + clients, RW)
 #
-# Default port binding is 127.0.0.1:8400 — terminate TLS in your reverse
-# proxy (Caddy / Traefik / nginx) and forward there. To expose directly,
-# change to "8400:8400" but you really do not want a bare bearer-token
-# server on 0.0.0.0.
+# Port binding is controlled by MCP_PORT_BIND (see .env.example):
+#   - default 127.0.0.1 — safest, forward from a reverse proxy on the
+#     SAME host/LXC (Caddy/Traefik/nginx container or sibling on the
+#     same bridge). This is what you want 90% of the time.
+#   - 0.0.0.0 — required when your reverse proxy lives on a DIFFERENT
+#     host and reaches this LXC over its LAN IP (cross-LXC Caddy,
+#     Caddy on the Proxmox host, etc.). You still MUST restrict the
+#     port with a firewall — mcp-brain's bearer auth is not meant to
+#     be internet-facing by itself.
 
 services:
   mcp-brain:
@@ -16,7 +21,7 @@ services:
     container_name: mcp-brain
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8400:8400"
+      - "${MCP_PORT_BIND:-127.0.0.1}:8400:8400"
     environment:
       MCP_TRANSPORT: http
       MCP_HOST: 0.0.0.0
