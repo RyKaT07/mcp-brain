@@ -14,14 +14,37 @@ Or, if you symlinked it as `mcp-brain-update`:
 sudo mcp-brain-update
 ```
 
-That is just:
+What it does, in order:
+
+1. Fetches the current upstream `docker-compose.yml` from `${MCP_BRAIN_REPO}@${MCP_BRAIN_BRANCH}` and re-pins the image tag to the installer's default.
+2. Compares it against `/opt/mcp-brain/docker-compose.yml`:
+   - **No change** → the existing file is kept as-is, no prompt.
+   - **Change** → the diff is printed and you are prompted `Apply these compose changes? [y/N]`. Saying no aborts the update before the image is even pulled. Saying yes replaces `docker-compose.yml` with the new version and saves the previous one as `docker-compose.yml.bak` next to it.
+3. `docker compose pull` — pulls the current image tag.
+4. `docker compose up -d` — recreates the container with the (possibly updated) compose.
+5. Prints `docker compose ps`.
+
+The compose re-sync step exists because new releases occasionally add required env vars (the OAuth rollout added `MCP_OAUTH_ADMIN_SECRET`), and pulling a new image against a stale compose that does not wire the variable through is a silent failure mode. Always re-syncing — with a diff — catches that before it causes downtime.
+
+For unattended upgrades (cron, CI), add `--yes` to auto-accept any compose diffs:
+
 ```bash
-cd /opt/mcp-brain
-docker compose pull
-docker compose up -d
+sudo bash /opt/mcp-brain/scripts/install.sh update --yes
 ```
 
 Takes a few seconds. The health check (`/healthz`) and `docker compose ps` are printed at the end.
+
+### Restoring the previous compose file
+
+If an upstream compose change breaks something in your environment, the previous version is right there next to the new one:
+
+```bash
+cd /opt/mcp-brain
+mv docker-compose.yml.bak docker-compose.yml
+docker compose up -d
+```
+
+Only the most recent backup is kept (each update overwrites the previous `.bak`), so if you want to roll further back, use git on the repo and edit by hand.
 
 ## Pinning a version
 
