@@ -21,7 +21,7 @@ from mcp_brain.tools._perms import require
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://api.todoist.com/rest/v2"
+_BASE = "https://api.todoist.com/api/v1"
 
 _PRIORITY_TO_API = {"normal": 1, "medium": 2, "high": 3, "urgent": 4}
 _PRIORITY_EMOJI = {4: "\U0001f534", 3: "\U0001f7e0", 2: "\U0001f535", 1: "\u26aa"}
@@ -215,10 +215,13 @@ def register_todoist_tools(mcp: FastMCP, api_key: str) -> None:
                         )
                     params["section_id"] = sid
 
+            # Todoist API v1 moved filter to a dedicated endpoint:
+            # GET /tasks/filter?query=... (was GET /tasks?filter=... in v2)
             if filter:
-                params["filter"] = filter
-
-            tasks = _get("/tasks", params if params else None)
+                filter_params = {"query": filter}
+                tasks = _get("/tasks/filter", filter_params)
+            else:
+                tasks = _get("/tasks", params if params else None)
             if not tasks:
                 label = f" in '{project}'" if project else ""
                 label += f" / {section}" if section else ""
