@@ -10,18 +10,34 @@ from mcp.server.fastmcp import FastMCP
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.tools._perms import ALL, allowed_subscopes, require
 
-
-def register_briefing_tools(mcp: FastMCP, knowledge_dir: Path):
-
-    @mcp.tool()
-    def get_briefing(scope: str | None = None) -> str:
-        """Get a contextual briefing based on meta.yaml and knowledge files.
+_GET_BRIEFING_BASE_DESCRIPTION = """Get a contextual briefing based on meta.yaml and knowledge files.
 
         Use this at the start of a session to load relevant context.
 
         Args:
             scope: Optional — 'work', 'school', 'homelab'. If omitted, returns meta + overview.
         """
+
+
+def _build_briefing_description(briefing_trigger: str) -> str:
+    """Prepend read-discipline / wake-word rules to the get_briefing description.
+
+    Same pattern as `_build_knowledge_update_description` in knowledge.py:
+    the prepended text is part of the tool schema, so every MCP client
+    (including claude.ai web) MUST pass it to the model verbatim.
+    """
+    if not briefing_trigger:
+        return _GET_BRIEFING_BASE_DESCRIPTION
+    return f"{briefing_trigger.strip()}\n\n---\n\n{_GET_BRIEFING_BASE_DESCRIPTION}"
+
+
+def register_briefing_tools(
+    mcp: FastMCP, knowledge_dir: Path, *, briefing_trigger: str = ""
+):
+    briefing_description = _build_briefing_description(briefing_trigger)
+
+    @mcp.tool(description=briefing_description)
+    def get_briefing(scope: str | None = None) -> str:
         if scope is not None:
             try:
                 require(f"briefing:{scope}")
