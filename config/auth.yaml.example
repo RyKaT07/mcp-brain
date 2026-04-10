@@ -24,6 +24,8 @@
 #   inbox:write                 inbox_add, inbox_accept, inbox_reject
 #   briefing:<scope>            get_briefing (filtered)
 #   secrets_schema:<scope>      secrets_schema (filtered)
+#   todoist:read                todoist_projects, todoist_sections, todoist_list
+#   todoist:write               todoist_add, todoist_complete
 #
 # `<scope>` matches a directory under knowledge/ (e.g. work, school, homelab,
 # private, projekt-foo) for knowledge/briefing, or a top-level key under
@@ -46,6 +48,8 @@ tokens:
       - inbox:read
       - inbox:write
       - briefing:school
+      - todoist:read
+      - todoist:write
 
   # Read-only homelab — n8n / monitoring scripts.
   - id: n8n-homelab-ro
