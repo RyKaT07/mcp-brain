@@ -36,6 +36,7 @@ from mcp_brain.tools.briefing import register_briefing_tools
 from mcp_brain.tools.inbox import register_inbox_tools
 from mcp_brain.tools.knowledge import register_knowledge_tools
 from mcp_brain.tools.secrets_schema import register_secrets_tools
+from mcp_brain.tools.todoist import register_todoist_tools
 
 KNOWLEDGE_DIR = Path(os.getenv("MCP_KNOWLEDGE_DIR", "./knowledge"))
 AUTH_CONFIG_PATH = Path(os.getenv("MCP_AUTH_CONFIG", "./config/auth.yaml"))
@@ -48,6 +49,7 @@ PUBLIC_URL = os.getenv("MCP_PUBLIC_URL", f"http://localhost:{PORT}/")
 # value; anything else is treated as http so legacy `MCP_TRANSPORT=sse`
 # in existing .env files still boots cleanly rather than erroring out.
 TRANSPORT = os.getenv("MCP_TRANSPORT", "http")
+TODOIST_API_KEY = os.getenv("TODOIST_API_KEY", "")
 
 
 def _load_instructions(knowledge_dir: Path) -> str | None:
@@ -199,6 +201,8 @@ def _build_mcp() -> FastMCP:
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
     register_briefing_tools(mcp, KNOWLEDGE_DIR)
     register_secrets_tools(mcp, KNOWLEDGE_DIR)
+    if TODOIST_API_KEY:
+        register_todoist_tools(mcp, TODOIST_API_KEY)
     return mcp
 
 
