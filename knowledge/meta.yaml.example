@@ -29,6 +29,7 @@ preferences:
 projects:
   work:
     company: "Your Employer"
+    todoist_project: "Work"       # Todoist project name for this scope (optional)
     repos:
       - repo-one
       - repo-two
@@ -37,18 +38,21 @@ projects:
 
   school:
     institution: "Your University"
+    todoist_project: "School"
     current_semester: true
     courses:
       - course-one
       - course-two
 
   homelab:
+    todoist_project: "Homelab"
     host: "homeserver-hostname"
     services:
       - service-one
       - service-two
 
   life:
+    todoist_project: "Personal"
     notes: "General personal assistant memory — preferences, routines, goals"
 
   people:
