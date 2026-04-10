@@ -52,7 +52,11 @@ def register_todoist_tools(mcp: FastMCP, api_key: str) -> None:
                 url = f"{url}?{urlencode(filtered)}"
         req = Request(url, headers=_headers(), method="GET")
         with urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
+            result = json.loads(resp.read())
+        # API v1 wraps list endpoints in {"results": [...]}
+        if isinstance(result, dict) and "results" in result:
+            return result["results"]
+        return result
 
     def _post(path: str, body: dict | None = None) -> dict | None:
         url = f"{_BASE}{path}"
