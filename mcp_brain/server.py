@@ -138,6 +138,32 @@ def _load_tool_policy(knowledge_dir: Path) -> str:
     return _extract_h2_section(content, "Tool policy")
 
 
+def _load_briefing_trigger(knowledge_dir: Path) -> str:
+    """Load the wake-word / trigger rules from `_meta/write-policy.md`, if any.
+
+    Same rationale as `_load_tool_policy`: claude.ai web does not
+    reliably enforce rules delivered via `instructions` alone. Injecting
+    the trigger rules into the `get_briefing` tool description ensures
+    the model sees them regardless of client behavior — the tool schema
+    is the one channel every MCP client must pass through verbatim.
+
+    Looks for `## Read discipline` in write-policy.md and extracts it.
+    The wake-word subsection (### 5. Wake word "jarvis") lives inside
+    that H2, so extracting the full H2 captures it along with the
+    other read-discipline rules that inform when to call get_briefing.
+
+    Empty string if the file or the section is missing.
+    """
+    policy = knowledge_dir / "_meta" / "write-policy.md"
+    if not policy.exists():
+        return ""
+    try:
+        content = policy.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return _extract_h2_section(content, "Read discipline — don't over-fetch")
+
+
 def _build_mcp() -> FastMCP:
     """Construct the FastMCP instance, with bearer auth on HTTP only.
 
@@ -157,6 +183,7 @@ def _build_mcp() -> FastMCP:
     """
     instructions = _load_instructions(KNOWLEDGE_DIR)
     tool_policy = _load_tool_policy(KNOWLEDGE_DIR)
+    briefing_trigger = _load_briefing_trigger(KNOWLEDGE_DIR)
 
     if TRANSPORT == "stdio":
         # Local dev: no HTTP, no auth. Tools fall back to god-mode.
@@ -199,7 +226,7 @@ def _build_mcp() -> FastMCP:
 
     register_knowledge_tools(mcp, KNOWLEDGE_DIR, tool_policy=tool_policy)
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
-    register_briefing_tools(mcp, KNOWLEDGE_DIR)
+    register_briefing_tools(mcp, KNOWLEDGE_DIR, briefing_trigger=briefing_trigger)
     register_secrets_tools(mcp, KNOWLEDGE_DIR)
     if TODOIST_API_KEY:
         register_todoist_tools(mcp, TODOIST_API_KEY)
