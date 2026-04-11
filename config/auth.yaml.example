@@ -26,6 +26,7 @@
 #   secrets_schema:<scope>      secrets_schema (filtered)
 #   todoist:read                todoist_projects, todoist_sections, todoist_list
 #   todoist:write               todoist_add, todoist_complete
+#   nextcloud:read              nextcloud_browse, nextcloud_read
 #
 # `<scope>` matches a directory under knowledge/ (e.g. work, school, homelab,
 # private, projekt-foo) for knowledge/briefing, or a top-level key under
