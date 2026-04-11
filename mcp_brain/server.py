@@ -36,6 +36,7 @@ from mcp_brain.tools.briefing import register_briefing_tools
 from mcp_brain.tools.inbox import register_inbox_tools
 from mcp_brain.tools.knowledge import register_knowledge_tools
 from mcp_brain.tools.secrets_schema import register_secrets_tools
+from mcp_brain.tools.nextcloud import register_nextcloud_tools
 from mcp_brain.tools.todoist import register_todoist_tools
 
 KNOWLEDGE_DIR = Path(os.getenv("MCP_KNOWLEDGE_DIR", "./knowledge"))
@@ -50,6 +51,9 @@ PUBLIC_URL = os.getenv("MCP_PUBLIC_URL", f"http://localhost:{PORT}/")
 # in existing .env files still boots cleanly rather than erroring out.
 TRANSPORT = os.getenv("MCP_TRANSPORT", "http")
 TODOIST_API_KEY = os.getenv("TODOIST_API_KEY", "")
+NEXTCLOUD_URL = os.getenv("NEXTCLOUD_URL", "")
+NEXTCLOUD_USER = os.getenv("NEXTCLOUD_USER", "")
+NEXTCLOUD_PASSWORD = os.getenv("NEXTCLOUD_PASSWORD", "")
 
 
 def _load_instructions(knowledge_dir: Path) -> str | None:
@@ -230,6 +234,8 @@ def _build_mcp() -> FastMCP:
     register_secrets_tools(mcp, KNOWLEDGE_DIR)
     if TODOIST_API_KEY:
         register_todoist_tools(mcp, TODOIST_API_KEY)
+    if NEXTCLOUD_URL and NEXTCLOUD_USER and NEXTCLOUD_PASSWORD:
+        register_nextcloud_tools(mcp, NEXTCLOUD_URL, NEXTCLOUD_USER, NEXTCLOUD_PASSWORD)
     return mcp
 
 
