@@ -48,6 +48,12 @@ services:
       # Get credentials at https://trello.com/power-ups/admin
       TRELLO_API_KEY: ${TRELLO_API_KEY:-}
       TRELLO_API_TOKEN: ${TRELLO_API_TOKEN:-}
+      # Google Calendar integration (optional). OAuth 2.0 with offline
+      # refresh token. Run scripts/google-auth.py once to get the refresh
+      # token, then paste all three values here.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REFRESH_TOKEN: ${GOOGLE_REFRESH_TOKEN:-}
     volumes:
       # Bind-mount the whole /data dir so oauth-state.json can be
       # created by the container user (uid 1000) on first run. The

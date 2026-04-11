@@ -37,6 +37,7 @@ from mcp_brain.tools.inbox import register_inbox_tools
 from mcp_brain.tools.knowledge import register_knowledge_tools
 from mcp_brain.tools.secrets_schema import register_secrets_tools
 from mcp_brain.tools.nextcloud import register_nextcloud_tools
+from mcp_brain.tools.gcal import register_gcal_tools
 from mcp_brain.tools.todoist import register_todoist_tools
 from mcp_brain.tools.trello import register_trello_tools
 
@@ -57,6 +58,9 @@ NEXTCLOUD_USER = os.getenv("NEXTCLOUD_USER", "")
 NEXTCLOUD_PASSWORD = os.getenv("NEXTCLOUD_PASSWORD", "")
 TRELLO_API_KEY = os.getenv("TRELLO_API_KEY", "")
 TRELLO_API_TOKEN = os.getenv("TRELLO_API_TOKEN", "")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REFRESH_TOKEN = os.getenv("GOOGLE_REFRESH_TOKEN", "")
 
 
 def _load_instructions(knowledge_dir: Path) -> str | None:
@@ -241,6 +245,8 @@ def _build_mcp() -> FastMCP:
         register_nextcloud_tools(mcp, NEXTCLOUD_URL, NEXTCLOUD_USER, NEXTCLOUD_PASSWORD)
     if TRELLO_API_KEY and TRELLO_API_TOKEN:
         register_trello_tools(mcp, TRELLO_API_KEY, TRELLO_API_TOKEN)
+    if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REFRESH_TOKEN:
+        register_gcal_tools(mcp, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN)
     return mcp
 
 
