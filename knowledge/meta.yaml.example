@@ -30,6 +30,7 @@ projects:
   work:
     company: "Your Employer"
     todoist_project: "Work"       # Todoist project name for this scope (optional)
+    trello_board: "Main Board"    # Trello board name for this scope (optional)
     repos:
       - repo-one
       - repo-two
