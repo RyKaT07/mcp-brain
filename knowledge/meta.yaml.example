@@ -39,6 +39,7 @@ projects:
   school:
     institution: "Your University"
     todoist_project: "School"
+    nextcloud_path: "Studia"          # Nextcloud folder for this scope (optional)
     current_semester: true
     courses:
       - course-one

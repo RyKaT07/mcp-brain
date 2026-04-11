@@ -27,7 +27,9 @@ RUN groupadd --gid 1000 mcpbrain \
     && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash mcpbrain
 
 COPY --from=build /dist/*.whl /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl && rm -f /tmp/*.whl
+RUN pip install --no-cache-dir /tmp/*.whl \
+    && pip install --no-cache-dir pdfplumber python-docx \
+    && rm -f /tmp/*.whl
 
 # Default data layout. Knowledge files and auth.yaml live under /data,
 # which the host bind-mounts.
