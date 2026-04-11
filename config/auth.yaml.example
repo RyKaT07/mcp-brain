@@ -27,6 +27,8 @@
 #   todoist:read                todoist_projects, todoist_sections, todoist_list
 #   todoist:write               todoist_add, todoist_complete
 #   nextcloud:read              nextcloud_browse, nextcloud_read
+#   trello:read                 trello_boards, trello_lists, trello_cards
+#   trello:write                trello_add_card, trello_move_card
 #
 # `<scope>` matches a directory under knowledge/ (e.g. work, school, homelab,
 # private, projekt-foo) for knowledge/briefing, or a top-level key under
