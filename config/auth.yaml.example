@@ -29,6 +29,8 @@
 #   nextcloud:read              nextcloud_browse, nextcloud_read
 #   trello:read                 trello_boards, trello_lists, trello_cards
 #   trello:write                trello_add_card, trello_move_card
+#   gcal:read                   gcal_calendars, gcal_events
+#   gcal:write                  gcal_add_event
 #
 # `<scope>` matches a directory under knowledge/ (e.g. work, school, homelab,
 # private, projekt-foo) for knowledge/briefing, or a top-level key under
