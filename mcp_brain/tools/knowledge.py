@@ -437,3 +437,232 @@ def register_knowledge_tools(
             + "\n\nHistory preserved — each revert is itself a new commit "
             "and can be undone again with `git revert HEAD`."
         )
+
+    # ------------------------------------------------------------------
+    # knowledge_freshness — per-file last-modified dates from git
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    def knowledge_freshness(scope: str | None = None) -> str:
+        """Check when knowledge files were last updated (via git history).
+
+        Returns a list of files with their last modification date and a
+        staleness indicator. Useful for identifying outdated information
+        that may need refreshing.
+
+        Args:
+            scope: Optional filter — e.g. 'work', 'school'. If omitted, shows all.
+        """
+        # Determine which scopes the caller can see.
+        allowed = allowed_subscopes("knowledge:read")
+        if allowed is not ALL and scope and scope not in allowed:
+            return f"Permission denied: no read access to scope '{scope}'."
+
+        # Collect .md files.
+        if scope:
+            search_dirs = [knowledge_dir / _sanitize(scope)]
+        else:
+            search_dirs = sorted(
+                d
+                for d in knowledge_dir.iterdir()
+                if d.is_dir() and not d.name.startswith((".", "_"))
+            )
+            # Filter to allowed scopes.
+            if allowed is not ALL:
+                search_dirs = [d for d in search_dirs if d.name in allowed]
+
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        entries: list[tuple[str, str, str, int]] = []  # (scope, project, date_str, days_ago)
+
+        for scope_dir in search_dirs:
+            if not scope_dir.is_dir():
+                continue
+            for md_file in sorted(scope_dir.glob("*.md")):
+                scope_name = scope_dir.name
+                project_name = md_file.stem
+
+                # Get last commit date for this file.
+                try:
+                    result = subprocess.run(
+                        ["git", "log", "-1", "--format=%aI", "--", str(md_file)],
+                        cwd=knowledge_dir,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                    date_str = result.stdout.strip()
+                    if date_str:
+                        last_modified = datetime.fromisoformat(date_str)
+                        days_ago = (now - last_modified).days
+                    else:
+                        date_str = "(untracked)"
+                        days_ago = -1
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    date_str = "(no git)"
+                    days_ago = -1
+
+                entries.append((scope_name, project_name, date_str, days_ago))
+
+        if not entries:
+            return "No knowledge files found." + (
+                f" (scope filter: {scope})" if scope else ""
+            )
+
+        # Build output with staleness indicators.
+        lines: list[str] = []
+        current_scope = ""
+        for scope_name, project_name, date_str, days_ago in entries:
+            if scope_name != current_scope:
+                if lines:
+                    lines.append("")
+                lines.append(f"📂 {scope_name}/")
+                current_scope = scope_name
+
+            if days_ago < 0:
+                indicator = "❓"
+            elif days_ago <= 7:
+                indicator = "🟢"  # fresh
+            elif days_ago <= 30:
+                indicator = "🟡"  # aging
+            elif days_ago <= 90:
+                indicator = "🟠"  # stale
+            else:
+                indicator = "🔴"  # very stale
+
+            if days_ago < 0:
+                age_str = date_str
+            elif days_ago == 0:
+                age_str = "today"
+            elif days_ago == 1:
+                age_str = "yesterday"
+            else:
+                age_str = f"{days_ago}d ago"
+
+            lines.append(f"  {indicator} {project_name} — {age_str}")
+
+        lines.append("")
+        lines.append("Legend: 🟢 ≤7d  🟡 ≤30d  🟠 ≤90d  🔴 >90d  ❓ no history")
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # knowledge_map — vault structure overview for navigation
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    def knowledge_map(scope: str | None = None, include_sections: bool = True) -> str:
+        """Get a structural map of the knowledge vault for navigation.
+
+        Returns scopes, files, H2 section headers, cross-references
+        (backtick mentions of other files), and freshness per file.
+        Designed to help AI agents orient themselves in the vault before
+        reading specific files.
+
+        Args:
+            scope: Optional filter — e.g. 'work', 'school'. If omitted, maps all.
+            include_sections: Show H2 section headers per file (default true).
+        """
+        allowed = allowed_subscopes("knowledge:read")
+        if allowed is not ALL and scope and scope not in allowed:
+            return f"Permission denied: no read access to scope '{scope}'."
+
+        if scope:
+            search_dirs = [knowledge_dir / _sanitize(scope)]
+        else:
+            search_dirs = sorted(
+                d
+                for d in knowledge_dir.iterdir()
+                if d.is_dir() and not d.name.startswith((".", "_"))
+            )
+            if allowed is not ALL:
+                search_dirs = [d for d in search_dirs if d.name in allowed]
+
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+
+        # Cross-reference pattern: `scope/project` in backticks.
+        xref_re = re.compile(r"`([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)`")
+
+        lines: list[str] = []
+        total_files = 0
+        total_sections = 0
+
+        for scope_dir in search_dirs:
+            if not scope_dir.is_dir():
+                continue
+            md_files = sorted(scope_dir.glob("*.md"))
+            if not md_files:
+                continue
+
+            scope_name = scope_dir.name
+            lines.append(f"📂 {scope_name}/ ({len(md_files)} files)")
+
+            for md_file in md_files:
+                total_files += 1
+                project_name = md_file.stem
+                content = md_file.read_text(encoding="utf-8")
+
+                # Freshness.
+                try:
+                    result = subprocess.run(
+                        ["git", "log", "-1", "--format=%aI", "--", str(md_file)],
+                        cwd=knowledge_dir,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                    date_str = result.stdout.strip()
+                    if date_str:
+                        days_ago = (now - datetime.fromisoformat(date_str)).days
+                        if days_ago <= 7:
+                            age = "🟢"
+                        elif days_ago <= 30:
+                            age = "🟡"
+                        elif days_ago <= 90:
+                            age = "🟠"
+                        else:
+                            age = "🔴"
+                        if days_ago == 0:
+                            age_label = "today"
+                        elif days_ago == 1:
+                            age_label = "yesterday"
+                        else:
+                            age_label = f"{days_ago}d"
+                    else:
+                        age = "❓"
+                        age_label = "untracked"
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    age = "❓"
+                    age_label = "no git"
+
+                # Sections.
+                sections = _parse_sections(content)
+                section_names = [s for s in sections if s != "_preamble"]
+                total_sections += len(section_names)
+
+                # Cross-references.
+                xrefs = sorted(set(xref_re.findall(content)))
+
+                lines.append(f"  {age} {project_name} ({age_label})")
+
+                if include_sections and section_names:
+                    for sec in section_names:
+                        lines.append(f"    § {sec}")
+
+                if xrefs:
+                    lines.append(f"    → refs: {', '.join(xrefs)}")
+
+            lines.append("")
+
+        if not lines:
+            return "No knowledge files found." + (
+                f" (scope filter: {scope})" if scope else ""
+            )
+
+        # Summary header.
+        header = f"Knowledge vault: {total_files} files, {total_sections} sections"
+        if scope:
+            header += f" (scope: {scope})"
+        return header + "\n\n" + "\n".join(lines)
