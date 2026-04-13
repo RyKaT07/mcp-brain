@@ -40,6 +40,7 @@ from mcp_brain.tools.nextcloud import register_nextcloud_tools
 from mcp_brain.tools.gcal import register_gcal_tools
 from mcp_brain.tools.todoist import register_todoist_tools
 from mcp_brain.tools.trello import register_trello_tools
+from mcp_brain.tools.wake import register_wake_tools
 
 KNOWLEDGE_DIR = Path(os.getenv("MCP_KNOWLEDGE_DIR", "./knowledge"))
 AUTH_CONFIG_PATH = Path(os.getenv("MCP_AUTH_CONFIG", "./config/auth.yaml"))
@@ -247,6 +248,9 @@ def _build_mcp() -> FastMCP:
         register_trello_tools(mcp, TRELLO_API_KEY, TRELLO_API_TOKEN)
     if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REFRESH_TOKEN:
         register_gcal_tools(mcp, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN)
+    # brain_wake must be registered LAST so its tool inventory snapshot
+    # captures every tool registered above (including conditional ones).
+    register_wake_tools(mcp, KNOWLEDGE_DIR, briefing_trigger=briefing_trigger)
     return mcp
 
 

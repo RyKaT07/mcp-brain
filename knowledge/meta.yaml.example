@@ -16,6 +16,7 @@ preferences:
   code_style: "explicit types, no magic"
   commit_messages: conventional-commits
   docs_language: "en (code, comments, docs, notes)"
+  wake_word: "jarvis"              # trigger word for brain_wake() tool
 
 # Declarative project index. Each top-level key is a `scope` and the
 # agent will look for knowledge files under `knowledge/<scope>/*.md`.
