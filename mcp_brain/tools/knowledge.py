@@ -567,6 +567,87 @@ def register_knowledge_tools(
         lines.append("Legend: 🟢 ≤7d  🟡 ≤30d  🟠 ≤90d  🔴 >90d  ❓ no history")
         return "\n".join(lines)
 
+    @mcp.tool()
+    def knowledge_delete(scope: str, project: str) -> str:
+        """Delete a knowledge file permanently.
+
+        Removes the file from disk and commits the deletion to git history.
+        This cannot be undone via knowledge_undo — use ssh + git revert for
+        recovery if needed.
+
+        Args:
+            scope: Category — e.g. 'work', 'school', 'homelab'
+            project: Project/topic name (filename without .md)
+        """
+        meter_call("knowledge_delete")
+        try:
+            require(f"knowledge:write:{scope}")
+        except PermissionDenied as e:
+            return str(e)
+
+        err = _validate_scope_project(scope, project)
+        if err:
+            return err
+
+        err = _validate_scope_writable(scope)
+        if err:
+            return err
+
+        effective_dir = get_effective_knowledge_dir(knowledge_dir)
+        filepath = _resolve_file(effective_dir, scope, project)
+        if not filepath.exists():
+            return f"No knowledge file found: {scope}/{project}"
+
+        lock_path = filepath.with_suffix(".lock")
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+        filepath.unlink()
+
+        # Remove the parent scope directory only if now empty.
+        try:
+            scope_dir = filepath.parent
+            if scope_dir.is_dir() and not any(scope_dir.iterdir()):
+                scope_dir.rmdir()
+        except OSError:
+            pass
+
+        # Stage deletion with `git rm --cached` (file is already gone from disk)
+        # then commit. We cannot use `_git_commit` here because `git add` will
+        # not stage a removed file — only `git rm` stages deletions.
+        try:
+            rm_result = subprocess.run(
+                ["git", "rm", "--cached", "--force", str(filepath)],
+                cwd=effective_dir,
+                capture_output=True,
+                text=True,
+            )
+            if rm_result.returncode != 0:
+                logger.warning(
+                    "git rm failed for %s: %s",
+                    filepath,
+                    (rm_result.stderr or rm_result.stdout or "<no output>").strip(),
+                )
+            else:
+                commit_result = subprocess.run(
+                    ["git", "commit", "-m", f"delete {scope}/{project}"],
+                    cwd=effective_dir,
+                    capture_output=True,
+                    text=True,
+                )
+                if commit_result.returncode != 0:
+                    logger.warning(
+                        "git commit failed after delete of %s: %s",
+                        filepath,
+                        (commit_result.stderr or commit_result.stdout or "<no output>").strip(),
+                    )
+        except FileNotFoundError:
+            pass  # git not installed — stdio dev mode, skip silently
+
+        return f"Deleted {scope}/{project}"
+
     # ------------------------------------------------------------------
     # knowledge_map — vault structure overview for navigation
     # ------------------------------------------------------------------
