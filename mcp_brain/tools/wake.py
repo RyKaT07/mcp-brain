@@ -8,14 +8,101 @@ context: user briefing, active policies, and behavioral rules.
 The wake word is read from `meta.yaml` at server startup and baked
 into the tool description. Changing it requires a container restart
 (tool descriptions are static in FastMCP — set once at registration).
+
+Hardening:
+- Scope gate: caller must have the ``wake:read`` scope.
+- Rate limiting: at most 1 call per token per 10 s (in-memory bucket).
+- Audit log: each call is logged at INFO level with token.id + timestamp.
+- Tool inventory filtering: tools are omitted from the inventory when
+  the caller clearly lacks the scope needed to use them.
 """
 
+import logging
+import threading
+import time
 from pathlib import Path
 
 import yaml
+from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.fastmcp import FastMCP
 
-from mcp_brain.tools._perms import ALL, allowed_subscopes
+from mcp_brain.auth import PermissionDenied
+from mcp_brain.tools._perms import ALL, allowed_subscopes, has_scope, require
+
+# Type alias for the scope check mode used in _TOOL_SCOPE_PREFIXES.
+# "exact"   → has_scope(scope) — single or two-segment exact/wildcard check
+# "any_sub" → allowed_subscopes(scope) is non-empty — three-segment resources
+#             where tokens hold specific subscopes (e.g. knowledge:read:work)
+_EXACT = "exact"
+_ANY_SUB = "any_sub"
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Rate-limiting state (in-memory, process-lifetime)
+# 1 call per RATE_LIMIT_SECONDS per token_id.
+
+_RATE_LIMIT_SECONDS: float = 10.0
+_rate_lock = threading.Lock()
+_last_wake: dict[str, float] = {}  # {token_id: last_call_epoch}
+
+
+def _check_rate_limit() -> str | None:
+    """Return an error string if the caller is over the rate limit, else None.
+
+    In stdio / god-mode (no access token) rate limiting is skipped — the
+    local dev path is single-user and trusted.
+    """
+    tok = get_access_token()
+    if tok is None:
+        return None  # stdio / god-mode — no limit
+    token_id = tok.client_id
+    now = time.monotonic()
+    with _rate_lock:
+        last = _last_wake.get(token_id)
+        if last is not None and (now - last) < _RATE_LIMIT_SECONDS:
+            remaining = _RATE_LIMIT_SECONDS - (now - last)
+            return (
+                f"Rate limited: brain_wake may be called at most once every "
+                f"{int(_RATE_LIMIT_SECONDS)} seconds per token. "
+                f"Retry in {remaining:.1f}s."
+            )
+        _last_wake[token_id] = now
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Tool-scope heuristics used for inventory filtering.
+# Maps (tool_name_prefix, scope_or_prefix, check_mode).
+#
+# _EXACT:   has_scope(scope) — use when the required scope is a complete
+#           1- or 2-segment value (e.g. "inbox:read", "briefing").
+# _ANY_SUB: allowed_subscopes(prefix) is non-empty — use when tokens hold
+#           3-segment scopes like "knowledge:read:work"; we can't know
+#           which sub-scope to require, so we accept any sub-scope.
+
+_TOOL_SCOPE_PREFIXES: list[tuple[str, str, str]] = [
+    ("knowledge_", "knowledge:read", _ANY_SUB),
+    ("get_briefing", "briefing", _ANY_SUB),
+    ("inbox_", "inbox:read", _EXACT),
+    ("nextcloud_", "nextcloud:read", _EXACT),
+    ("gcal_", "gcal:read", _EXACT),
+    ("todoist_", "todoist:read", _EXACT),
+    ("trello_", "trello:read", _EXACT),
+    ("secrets_schema", "secrets_schema", _ANY_SUB),
+    ("apikey", "apikeys:read", _EXACT),
+]
+
+
+def _tool_visible(tool_name: str) -> bool:
+    """Return True if the active token is allowed to see *tool_name* in the inventory."""
+    for prefix, scope, mode in _TOOL_SCOPE_PREFIXES:
+        if tool_name.startswith(prefix):
+            if mode == _ANY_SUB:
+                subscopes = allowed_subscopes(scope)
+                return subscopes is ALL or bool(subscopes)
+            return has_scope(scope)
+    return True  # no restriction mapped → always visible
 
 
 def _load_wake_word(knowledge_dir: Path) -> str:
@@ -89,6 +176,22 @@ def register_wake_tools(
     @mcp.tool(description=description)
     def brain_wake() -> str:
         """Activate brain context. Returns briefing, policy, and tool inventory."""
+        # ── Scope gate ─────────────────────────────────────────────
+        try:
+            require("wake:read")
+        except PermissionDenied as exc:
+            return str(exc)
+
+        # ── Rate limit ─────────────────────────────────────────────
+        rate_err = _check_rate_limit()
+        if rate_err is not None:
+            return rate_err
+
+        # ── Audit log ──────────────────────────────────────────────
+        tok = get_access_token()
+        token_id = tok.client_id if tok is not None else "stdio"
+        logger.info("brain_wake called", extra={"token_id": token_id, "ts": time.time()})
+
         meta_path = knowledge_dir / "meta.yaml"
         warnings: list[str] = []
 
@@ -201,10 +304,11 @@ def register_wake_tools(
             parts.append(policy)
             parts.append("")
 
-        # ── Available tools ────────────────────────────────────────
-        if tool_lines:
+        # ── Available tools (filtered by caller scope) ────────────
+        visible = [line for line in tool_lines if _tool_visible(line.split("**")[1] if "**" in line else line)]
+        if visible:
             parts.append("## Available tools")
-            parts.extend(tool_lines)
+            parts.extend(visible)
             parts.append("")
 
         # ── Configuration warnings (shown last so they don't bury context)
