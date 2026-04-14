@@ -14,7 +14,13 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import PermissionDenied
-from mcp_brain.tools._perms import ALL, allowed_subscopes, require
+from mcp_brain.tools._perms import (
+    ALL,
+    allowed_subscopes,
+    get_effective_knowledge_dir,
+    meter_call,
+    require,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +223,7 @@ def register_knowledge_tools(
             project: Project/topic name (filename without .md)
             section: Optional H2 section title. If omitted, returns full file.
         """
+        meter_call("knowledge_read")
         try:
             require(f"knowledge:read:{scope}")
         except PermissionDenied as e:
@@ -226,7 +233,8 @@ def register_knowledge_tools(
         if err:
             return err
 
-        filepath = _resolve_file(knowledge_dir, scope, project)
+        effective_dir = get_effective_knowledge_dir(knowledge_dir)
+        filepath = _resolve_file(effective_dir, scope, project)
         if not filepath.exists():
             return f"No knowledge file found: {scope}/{project}"
 
@@ -257,6 +265,7 @@ def register_knowledge_tools(
             section: H2 section title to update (e.g. 'architecture', 'current_tasks')
             content: New markdown content for that section (without the ## header)
         """
+        meter_call("knowledge_update")
         try:
             require(f"knowledge:write:{scope}")
         except PermissionDenied as e:
@@ -270,7 +279,8 @@ def register_knowledge_tools(
         if err:
             return err
 
-        filepath = _resolve_file(knowledge_dir, scope, project)
+        effective_dir = get_effective_knowledge_dir(knowledge_dir)
+        filepath = _resolve_file(effective_dir, scope, project)
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
         # File-level lock to prevent concurrent writes
@@ -293,7 +303,7 @@ def register_knowledge_tools(
                 sections[section] = content
                 filepath.write_text(_rebuild_markdown(sections), encoding="utf-8")
 
-                _git_commit(knowledge_dir, filepath, f"update {scope}/{project} § {section}")
+                _git_commit(effective_dir, filepath, f"update {scope}/{project} § {section}")
 
                 return f"Updated {scope}/{project} § {section}"
             finally:
@@ -306,21 +316,25 @@ def register_knowledge_tools(
         Args:
             scope: Optional filter — 'work', 'school', 'homelab'. If omitted, lists all.
         """
+        meter_call("knowledge_list")
+        effective_dir = get_effective_knowledge_dir(knowledge_dir)
         if scope is not None:
             try:
                 require(f"knowledge:read:{scope}")
             except PermissionDenied as e:
                 return str(e)
-            search_dirs = [knowledge_dir / scope]
+            search_dirs = [effective_dir / scope]
         else:
             # Default listing hides internal scopes (any `_foo` dir) and the
             # inbox staging area. Callers who genuinely want those must pass
             # `scope="_meta"` (or similar) explicitly and have the matching
             # read grant.
             allowed = allowed_subscopes("knowledge:read")
+            if not effective_dir.exists():
+                return "No knowledge files found."
             search_dirs = [
                 d
-                for d in knowledge_dir.iterdir()
+                for d in effective_dir.iterdir()
                 if d.is_dir()
                 and d.name not in ("inbox", ".git")
                 and not d.name.startswith("_")
@@ -357,6 +371,7 @@ def register_knowledge_tools(
         Returns:
             Summary of which commits were reverted, or an error string.
         """
+        meter_call("knowledge_undo")
         try:
             require("knowledge:write:*")
         except PermissionDenied as e:
@@ -367,11 +382,13 @@ def register_knowledge_tools(
         if steps > 10:
             return "Error: steps must be <= 10 (safety limit — use ssh for deeper rollbacks)"
 
+        effective_dir = get_effective_knowledge_dir(knowledge_dir)
+
         # 1. How many commits exist total? We refuse to wipe the init commit.
         try:
             count_out = subprocess.run(
                 ["git", "rev-list", "--count", "HEAD"],
-                cwd=knowledge_dir,
+                cwd=effective_dir,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -395,7 +412,7 @@ def register_knowledge_tools(
         try:
             log_out = subprocess.run(
                 ["git", "log", "--format=%H %s", f"-{steps}"],
-                cwd=knowledge_dir,
+                cwd=effective_dir,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -414,7 +431,7 @@ def register_knowledge_tools(
             try:
                 subprocess.run(
                     ["git", "revert", "--no-edit", sha],
-                    cwd=knowledge_dir,
+                    cwd=effective_dir,
                     capture_output=True,
                     text=True,
                     check=True,
@@ -453,6 +470,8 @@ def register_knowledge_tools(
         Args:
             scope: Optional filter — e.g. 'work', 'school'. If omitted, shows all.
         """
+        meter_call("knowledge_freshness")
+        effective_dir = get_effective_knowledge_dir(knowledge_dir)
         # Determine which scopes the caller can see.
         allowed = allowed_subscopes("knowledge:read")
         if allowed is not ALL and scope and scope not in allowed:
@@ -460,11 +479,13 @@ def register_knowledge_tools(
 
         # Collect .md files.
         if scope:
-            search_dirs = [knowledge_dir / _sanitize(scope)]
+            search_dirs = [effective_dir / _sanitize(scope)]
         else:
+            if not effective_dir.exists():
+                return "No knowledge files found."
             search_dirs = sorted(
                 d
-                for d in knowledge_dir.iterdir()
+                for d in effective_dir.iterdir()
                 if d.is_dir() and not d.name.startswith((".", "_"))
             )
             # Filter to allowed scopes.
@@ -487,7 +508,7 @@ def register_knowledge_tools(
                 try:
                     result = subprocess.run(
                         ["git", "log", "-1", "--format=%aI", "--", str(md_file)],
-                        cwd=knowledge_dir,
+                        cwd=effective_dir,
                         capture_output=True,
                         text=True,
                         check=True,
@@ -563,16 +584,20 @@ def register_knowledge_tools(
             scope: Optional filter — e.g. 'work', 'school'. If omitted, maps all.
             include_sections: Show H2 section headers per file (default true).
         """
+        meter_call("knowledge_map")
+        effective_dir = get_effective_knowledge_dir(knowledge_dir)
         allowed = allowed_subscopes("knowledge:read")
         if allowed is not ALL and scope and scope not in allowed:
             return f"Permission denied: no read access to scope '{scope}'."
 
         if scope:
-            search_dirs = [knowledge_dir / _sanitize(scope)]
+            search_dirs = [effective_dir / _sanitize(scope)]
         else:
+            if not effective_dir.exists():
+                return "No knowledge files found."
             search_dirs = sorted(
                 d
-                for d in knowledge_dir.iterdir()
+                for d in effective_dir.iterdir()
                 if d.is_dir() and not d.name.startswith((".", "_"))
             )
             if allowed is not ALL:
@@ -608,7 +633,7 @@ def register_knowledge_tools(
                 try:
                     result = subprocess.run(
                         ["git", "log", "-1", "--format=%aI", "--", str(md_file)],
-                        cwd=knowledge_dir,
+                        cwd=effective_dir,
                         capture_output=True,
                         text=True,
                         check=True,

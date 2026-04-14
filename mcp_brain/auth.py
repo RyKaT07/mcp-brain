@@ -49,6 +49,14 @@ class TokenEntry(BaseModel):
     token: str = Field(..., min_length=8, description="Secret bearer value")
     description: str | None = None
     scopes: list[str] = Field(default_factory=list)
+    user_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional user namespace. If set, knowledge tools scope this token "
+            "to knowledge/users/{user_id}/ instead of the root knowledge/ dir. "
+            "Omit for Patryk's single-user setup (backward-compatible default)."
+        ),
+    )
 
 
 class AuthConfig(BaseModel):

@@ -42,6 +42,8 @@ tokens:
     token: "tok_REPLACE_ME_with_openssl_rand_hex_32"
     description: "Personal laptop, full access"
     scopes: ["*"]
+    # user_id: null   # omit (or set null) for Patryk's root knowledge/ dir
+    # user_id: alice  # set to route knowledge to knowledge/users/alice/
 
   # School-only — Cursor session focused on coursework.
   - id: cursor-school

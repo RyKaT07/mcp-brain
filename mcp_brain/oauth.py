@@ -54,6 +54,7 @@ from mcp_brain.auth import YamlTokenVerifier
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
+    from mcp_brain.keystore import KeyStore
 
 logger = logging.getLogger("mcp_brain.oauth")
 
@@ -337,14 +338,15 @@ class ChainedProvider(
 
     FastMCP wires this into BearerAuthBackend via ProviderTokenVerifier,
     which calls `load_access_token(token)` for every incoming bearer.
-    Our implementation checks the OAuth store first, then falls back
-    to the wrapped YamlTokenVerifier — so the laptop CLI bearer flow
-    is untouched, while claude.ai Custom Connector gets its own
-    dynamically-issued tokens.
+    Our implementation checks three sources in order:
 
-    Phase 1 implements only `load_access_token` (the chain). The
-    rest of the provider methods raise NotImplementedError until
-    Phase 2 fills them in along with the consent page.
+    1. OAuth-issued tokens (claude.ai Custom Connectors via /token).
+    2. YAML bearer tokens (static `config/auth.yaml`, Patryk's CLI).
+    3. Dynamic keystore tokens (generated via `apikeys_create` tool).
+
+    Tools see no difference — all three paths produce an AccessToken
+    with the same structure, and `_perms.require()` enforces scopes
+    identically for all sources.
     """
 
     def __init__(
@@ -354,6 +356,7 @@ class ChainedProvider(
         admin_secret: str,
         public_url: str,
         access_token_ttl_s: int = ACCESS_TOKEN_TTL_S,
+        key_store: "KeyStore | None" = None,
     ):
         self.store = OAuthStore(store_path)
         self.yaml_verifier = yaml_verifier
@@ -362,19 +365,23 @@ class ChainedProvider(
         self.access_token_ttl_s = access_token_ttl_s
         self.pending = PendingConsentStore()
         self.auth_codes = AuthorizationCodeStore()
+        self.key_store = key_store  # dynamic API key store (may be None)
 
     # ------------------------------------------------------------------ the chain
 
     async def load_access_token(self, token: str) -> AccessToken | None:
-        """Bearer validation for BOTH auth modes.
+        """Bearer validation for all three auth modes.
 
         1. OAuth-issued tokens live in `self.store.access_tokens`.
            If we find one that hasn't expired, return it.
         2. Otherwise delegate to the yaml verifier — the existing
            laptop-CLI bearer path.
-        3. Neither matches → return None → FastMCP's BearerAuthBackend
-           returns 401.
+        3. Check the dynamic keystore for API keys generated via
+           `apikeys_create`. Uses key UUID as client_id so
+           `_perms.get_current_user_id()` can map it back to user_id.
+        4. None of the above matches → return None → 401.
         """
+        # 1. OAuth-issued tokens
         oauth_rec = self.store.get_access_token(token)
         if oauth_rec is not None:
             return AccessToken(
@@ -384,7 +391,20 @@ class ChainedProvider(
                 expires_at=oauth_rec.expires_at,
                 resource=oauth_rec.resource,
             )
-        return await self.yaml_verifier.verify_token(token)
+        # 2. YAML bearer tokens
+        yaml_tok = await self.yaml_verifier.verify_token(token)
+        if yaml_tok is not None:
+            return yaml_tok
+        # 3. Dynamic keystore tokens
+        if self.key_store is not None:
+            key_entry = self.key_store.by_token(token)
+            if key_entry is not None:
+                return AccessToken(
+                    token=key_entry.token,
+                    client_id=key_entry.id,  # UUID — looked up by _perms.get_current_user_id
+                    scopes=list(key_entry.scopes),
+                )
+        return None
 
     # ------------------------------------------------------------------ DCR
 

@@ -31,7 +31,11 @@ from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import YamlTokenVerifier
+from mcp_brain.keystore import KeyStore
 from mcp_brain.oauth import ChainedProvider, register_oauth_consent_route
+from mcp_brain.usage import UsageMeter
+from mcp_brain.tools import _perms
+from mcp_brain.tools.apikeys import register_apikeys_tools
 from mcp_brain.tools.briefing import register_briefing_tools
 from mcp_brain.tools.inbox import register_inbox_tools
 from mcp_brain.tools.knowledge import register_knowledge_tools
@@ -45,6 +49,8 @@ from mcp_brain.tools.wake import register_wake_tools
 KNOWLEDGE_DIR = Path(os.getenv("MCP_KNOWLEDGE_DIR", "./knowledge"))
 AUTH_CONFIG_PATH = Path(os.getenv("MCP_AUTH_CONFIG", "./config/auth.yaml"))
 OAUTH_STORE_PATH = Path(os.getenv("MCP_OAUTH_STORE", "./data/oauth-state.json"))
+KEY_STORE_PATH = Path(os.getenv("MCP_KEY_STORE", "./data/keys.json"))
+USAGE_STORE_PATH = Path(os.getenv("MCP_USAGE_STORE", "./data/usage.json"))
 OAUTH_ADMIN_SECRET = os.getenv("MCP_OAUTH_ADMIN_SECRET", "")
 HOST = os.getenv("MCP_HOST", "0.0.0.0")
 PORT = int(os.getenv("MCP_PORT", "8400"))
@@ -197,6 +203,13 @@ def _build_mcp() -> FastMCP:
     tool_policy = _load_tool_policy(KNOWLEDGE_DIR)
     briefing_trigger = _load_briefing_trigger(KNOWLEDGE_DIR)
 
+    # ------------------------------------------------------------------
+    # Multi-user: dynamic key store + usage metering
+    # Both are created regardless of transport so stdio dev can also
+    # exercise apikeys_* tools without auth (god-mode fallback).
+    key_store = KeyStore(KEY_STORE_PATH)
+    usage_meter = UsageMeter(USAGE_STORE_PATH)
+
     if TRANSPORT == "stdio":
         # Local dev: no HTTP, no auth. Tools fall back to god-mode.
         mcp = FastMCP(
@@ -205,13 +218,23 @@ def _build_mcp() -> FastMCP:
             port=PORT,
             instructions=instructions,
         )
+        yaml_user_index: dict[str, str] = {}
     else:
         yaml_verifier = YamlTokenVerifier(AUTH_CONFIG_PATH)
+        # Build yaml_user_index: {token_entry.id: user_id} for yaml
+        # tokens that have an explicit user_id set. Used by
+        # _perms.get_current_user_id() for multi-user knowledge routing.
+        yaml_user_index = {
+            entry.id: entry.user_id
+            for entry in yaml_verifier.config.tokens
+            if entry.user_id is not None
+        }
         provider = ChainedProvider(
             store_path=OAUTH_STORE_PATH,
             yaml_verifier=yaml_verifier,
             admin_secret=OAUTH_ADMIN_SECRET,
             public_url=PUBLIC_URL,
+            key_store=key_store,
         )
         resource_server_url = str(PUBLIC_URL).rstrip("/") + "/mcp"
         mcp = FastMCP(
@@ -236,10 +259,19 @@ def _build_mcp() -> FastMCP:
         # to the inner Starlette at app-build time.
         register_oauth_consent_route(mcp, provider)
 
+    # Register multi-user helpers so knowledge tools can resolve user dirs
+    # and meter calls against the active key.
+    _perms.configure(
+        yaml_user_index=yaml_user_index,
+        key_store=key_store,
+        usage_meter=usage_meter,
+    )
+
     register_knowledge_tools(mcp, KNOWLEDGE_DIR, tool_policy=tool_policy)
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
     register_briefing_tools(mcp, KNOWLEDGE_DIR, briefing_trigger=briefing_trigger)
     register_secrets_tools(mcp, KNOWLEDGE_DIR)
+    register_apikeys_tools(mcp, key_store, usage_meter)
     if TODOIST_API_KEY:
         register_todoist_tools(mcp, TODOIST_API_KEY)
     if NEXTCLOUD_URL and NEXTCLOUD_USER and NEXTCLOUD_PASSWORD:
