@@ -1,27 +1,25 @@
 """
-OAuth 2.1 authorization server for claude.ai Custom Connectors.
+OAuth 2.1 authorization server for MCP client integrations.
 
 mcp-brain runs TWO auth modes simultaneously:
 
 - **yaml bearer tokens** (`YamlTokenVerifier`, `config/auth.yaml`) — for
-  Claude Code CLI which lets the user paste any `Authorization` header
-  into `~/.claude.json`. Tokens are configured by hand and never
-  rotate automatically.
-- **OAuth-issued tokens** (this module) — for claude.ai web + iOS +
-  Android + desktop chat "Custom Connectors", whose dialog only
-  supports OAuth 2.0. Every claude.ai device runs through DCR +
-  authorization_code + PKCE to get a `tok_oauth_*` bearer on our
-  server, and refreshes via `refresh_token` exchange until revoked.
+  local MCP clients (Claude Code CLI, Gemini CLI, Cursor, etc.) that
+  let the user inject a custom ``Authorization`` header directly into
+  the client config.  Tokens are configured by hand and never rotate
+  automatically.
+- **OAuth-issued tokens** (this module) — for cloud MCP surfaces
+  (claude.ai, ChatGPT, Google AI Studio, Gemini for Workspace, …) whose
+  connector dialogs only support OAuth 2.0 and cannot accept a static
+  header.  Every cloud client runs through DCR + authorization_code +
+  PKCE to get a ``tok_oauth_*`` bearer on our server and refreshes via
+  ``refresh_token`` exchange until revoked.
 
-Both live behind a single `ChainedProvider.load_access_token()` which
+Both live behind a single ``ChainedProvider.load_access_token()`` which
 first checks the OAuth store on disk, then falls back to the yaml
-verifier. Tools see no difference — both paths land in
-`BearerAuthBackend`'s `AuthenticatedUser.scopes` and flow through
-`_perms.require()` the same way.
-
-This Phase 1 scaffold implements `load_access_token` fully (the bearer
-validation chain) and leaves the DCR/authorize/token/refresh methods
-raising `NotImplementedError`. Phase 2 fills them in.
+verifier.  Tools see no difference — both paths land in
+``BearerAuthBackend``'s ``AuthenticatedUser.scopes`` and flow through
+``_perms.require()`` the same way.
 """
 
 from __future__ import annotations
@@ -337,15 +335,17 @@ class ChainedProvider(
     tokens and legacy yaml bearer tokens through a single interface.
 
     FastMCP wires this into BearerAuthBackend via ProviderTokenVerifier,
-    which calls `load_access_token(token)` for every incoming bearer.
+    which calls ``load_access_token(token)`` for every incoming bearer.
     Our implementation checks three sources in order:
 
-    1. OAuth-issued tokens (claude.ai Custom Connectors via /token).
-    2. YAML bearer tokens (static `config/auth.yaml`, Patryk's CLI).
-    3. Dynamic keystore tokens (generated via `apikeys_create` tool).
+    1. OAuth-issued tokens (cloud MCP clients — claude.ai, ChatGPT,
+       Google AI Studio, etc. — via ``/token``).
+    2. YAML bearer tokens (static ``config/auth.yaml``, local CLI
+       clients such as Claude Code, Gemini CLI, Cursor).
+    3. Dynamic keystore tokens (generated via ``apikeys_create`` tool).
 
-    Tools see no difference — all three paths produce an AccessToken
-    with the same structure, and `_perms.require()` enforces scopes
+    Tools see no difference — all three paths produce an ``AccessToken``
+    with the same structure, and ``_perms.require()`` enforces scopes
     identically for all sources.
     """
 
@@ -419,10 +419,10 @@ class ChainedProvider(
     ) -> None:
         """Store a freshly-registered client (called from the DCR handler).
 
-        We **force** `client_info.scope = "*"` before storing so that
-        `OAuthClientMetadata.validate_scope()` passes during the later
-        /authorize call regardless of what scope claude.ai requests.
-        Real authorization happens at tool level via `_perms.require()`,
+        We **force** ``client_info.scope = "*"`` before storing so that
+        ``OAuthClientMetadata.validate_scope()`` passes during the later
+        ``/authorize`` call regardless of what scope the client requests.
+        Real authorization happens at tool level via ``_perms.require()``,
         not at the OAuth scope layer, so we treat the OAuth scope field
         as "this client is allowed to request anything; the final
         enforcement is elsewhere".
@@ -806,10 +806,10 @@ def _render_consent_html(
 ) -> str:
     """Render the single-page HTML consent form.
 
-    Inline CSS, no external assets, no JavaScript. Shown once per
-    device at initial Custom Connector setup; after that, claude.ai
-    holds a refresh token and the user doesn't see this page unless
-    they explicitly re-authorize.
+    Inline CSS, no external assets, no JavaScript.  Shown once per
+    device at initial MCP connector setup; after that, the client holds
+    a refresh token and silently re-authorizes — the user does not see
+    this page again unless they explicitly revoke and re-connect.
     """
     scope_str = " ".join(scopes) if scopes else "*"
     error_block = (
@@ -853,11 +853,11 @@ def register_oauth_consent_route(
 ) -> None:
     """Register GET + POST /oauth/consent on the FastMCP instance.
 
-    The consent page is NOT protected by bearer auth — claude.ai can't
-    attach one, and that's the whole point of the page. Security comes
-    from the admin_secret field in the POSTed form, which must match
-    `MCP_OAUTH_ADMIN_SECRET` (checked with `hmac.compare_digest` for
-    constant-time comparison).
+    The consent page is NOT protected by bearer auth — OAuth clients
+    cannot attach one at this stage of the flow, and that is the whole
+    point of the page.  Security comes from the admin_secret field in
+    the POSTed form, which must match ``MCP_OAUTH_ADMIN_SECRET``
+    (checked with ``hmac.compare_digest`` for constant-time comparison).
 
     If the server starts without an admin secret configured, GET and
     POST both return 503 with a clear explanation.
