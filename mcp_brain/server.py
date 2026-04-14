@@ -32,6 +32,7 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.admin import build_admin_routes
 from mcp_brain.auth import YamlTokenVerifier
+from mcp_brain.logging_middleware import MCPLoggingMiddleware
 from mcp_brain.keystore import KeyStore
 from mcp_brain.oauth import ChainedProvider, register_oauth_consent_route
 from mcp_brain.usage import UsageMeter
@@ -326,7 +327,7 @@ def _build_app():
 
     admin_routes = build_admin_routes(key_store, ADMIN_SECRET) if ADMIN_SECRET else []
 
-    return Starlette(
+    outer = Starlette(
         debug=inner.debug,
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
@@ -336,6 +337,11 @@ def _build_app():
         middleware=inner.user_middleware,  # Bearer auth + auth context
         lifespan=lifespan,
     )
+
+    # Wrap with structured tool-call logging.  MCPLoggingMiddleware buffers
+    # the request body so it can inspect JSON-RPC method + tool name without
+    # interfering with the downstream handler.
+    return MCPLoggingMiddleware(outer)  # type: ignore[return-value]
 
 
 def main():

@@ -27,11 +27,17 @@ This module:
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
+import threading
 from pathlib import Path
 
 import yaml
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 class PermissionDenied(Exception):
@@ -97,22 +103,64 @@ def match_scope(granted: str, required: str) -> bool:
 
 
 class YamlTokenVerifier(TokenVerifier):
-    """TokenVerifier backed by an `auth.yaml` file.
+    """TokenVerifier backed by an ``auth.yaml`` file with hot-reload support.
 
-    The file is read once at construction. Restart the server to pick
-    up changes — single-user MCP, no hot-reload needed.
+    The file is read at construction and reloaded automatically when its
+    mtime changes.  Two reload strategies are supported:
+
+    - **Background thread** (default): a daemon thread polls the file every
+      ``reload_interval`` seconds.  Works in stdio mode and any asyncio loop.
+    - **SIGHUP**: when ``enable_sighup=True``, a SIGHUP signal triggers an
+      immediate reload (useful in production containers — send
+      ``kill -HUP <pid>`` after updating auth.yaml).
+
+    Hot-reload is atomic: the index is replaced in one assignment so readers
+    never see a half-loaded state.  No active connections are dropped — tokens
+    that were valid keep working until the next reload.
     """
 
-    def __init__(self, config_path: Path | str):
-        self._config = AuthConfig.load(config_path)
-        self._index = self._config.by_token()
+    def __init__(
+        self,
+        config_path: Path | str,
+        *,
+        reload_interval: float = 5.0,
+        enable_sighup: bool = True,
+    ):
+        self._config_path = Path(config_path)
+        self._reload_interval = reload_interval
+        self._lock = threading.Lock()
+        self._mtime: float = 0.0
+        self._config: AuthConfig | None = None
+        self._index: dict[str, TokenEntry] = {}
+        self._load()
+
+        self._watcher = threading.Thread(
+            target=self._watch_loop,
+            daemon=True,
+            name="auth-yaml-watcher",
+        )
+        self._watcher.start()
+
+        if enable_sighup:
+            import signal
+
+            try:
+                signal.signal(signal.SIGHUP, self._handle_sighup)
+            except (OSError, AttributeError):
+                # Windows or restricted environment — skip
+                pass
+
+    # ------------------------------------------------------------------
+    # Public interface
 
     @property
     def config(self) -> AuthConfig:
-        return self._config
+        with self._lock:
+            return self._config  # type: ignore[return-value]
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        entry = self._index.get(token)
+        with self._lock:
+            entry = self._index.get(token)
         if entry is None:
             return None
         return AccessToken(
@@ -120,3 +168,46 @@ class YamlTokenVerifier(TokenVerifier):
             client_id=entry.id,
             scopes=list(entry.scopes),
         )
+
+    # ------------------------------------------------------------------
+    # Internal reload machinery
+
+    def _load(self) -> None:
+        """Load (or reload) auth.yaml; update index atomically."""
+        try:
+            mtime = os.path.getmtime(self._config_path)
+            config = AuthConfig.load(self._config_path)
+            index = config.by_token()
+            with self._lock:
+                self._mtime = mtime
+                self._config = config
+                self._index = index
+            logger.info(
+                "auth.yaml loaded",
+                extra={"token_count": len(config.tokens), "path": str(self._config_path)},
+            )
+        except Exception as exc:
+            logger.error("auth.yaml reload failed: %s", exc)
+
+    def _check_reload(self) -> None:
+        """Reload if the file's mtime has changed."""
+        try:
+            mtime = os.path.getmtime(self._config_path)
+        except OSError:
+            return
+        with self._lock:
+            current = self._mtime
+        if mtime != current:
+            logger.info("auth.yaml changed — reloading")
+            self._load()
+
+    def _watch_loop(self) -> None:
+        """Background daemon thread: poll mtime every reload_interval seconds."""
+        while True:
+            threading.Event().wait(self._reload_interval)  # interruptible sleep
+            self._check_reload()
+
+    def _handle_sighup(self, _signum: int, _frame: object) -> None:
+        """SIGHUP handler: force immediate reload."""
+        logger.info("SIGHUP received — reloading auth.yaml")
+        self._load()
