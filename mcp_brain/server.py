@@ -30,6 +30,7 @@ from pathlib import Path
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import FastMCP
 
+from mcp_brain.admin import build_admin_routes
 from mcp_brain.auth import YamlTokenVerifier
 from mcp_brain.keystore import KeyStore
 from mcp_brain.oauth import ChainedProvider, register_oauth_consent_route
@@ -44,6 +45,8 @@ from mcp_brain.tools.nextcloud import register_nextcloud_tools
 from mcp_brain.tools.gcal import register_gcal_tools
 from mcp_brain.tools.todoist import register_todoist_tools
 from mcp_brain.tools.trello import register_trello_tools
+from mcp_brain.tools.maintain import register_maintain_tools
+from mcp_brain.tools.meta import register_meta_tools
 from mcp_brain.tools.wake import register_wake_tools
 
 KNOWLEDGE_DIR = Path(os.getenv("MCP_KNOWLEDGE_DIR", "./knowledge"))
@@ -52,6 +55,7 @@ OAUTH_STORE_PATH = Path(os.getenv("MCP_OAUTH_STORE", "./data/oauth-state.json"))
 KEY_STORE_PATH = Path(os.getenv("MCP_KEY_STORE", "./data/keys.json"))
 USAGE_STORE_PATH = Path(os.getenv("MCP_USAGE_STORE", "./data/usage.json"))
 OAUTH_ADMIN_SECRET = os.getenv("MCP_OAUTH_ADMIN_SECRET", "")
+ADMIN_SECRET = os.getenv("MCP_ADMIN_SECRET", "")
 HOST = os.getenv("MCP_HOST", "0.0.0.0")
 PORT = int(os.getenv("MCP_PORT", "8400"))
 PUBLIC_URL = os.getenv("MCP_PUBLIC_URL", f"http://localhost:{PORT}/")
@@ -182,6 +186,12 @@ def _load_briefing_trigger(knowledge_dir: Path) -> str:
     return _extract_h2_section(content, "Read discipline — don't over-fetch")
 
 
+# Module-level key store and usage meter so both _build_mcp() and
+# _build_app() can share the same instances without threading issues.
+key_store = KeyStore(KEY_STORE_PATH)
+usage_meter = UsageMeter(USAGE_STORE_PATH)
+
+
 def _build_mcp() -> FastMCP:
     """Construct the FastMCP instance, with bearer auth on HTTP only.
 
@@ -202,13 +212,6 @@ def _build_mcp() -> FastMCP:
     instructions = _load_instructions(KNOWLEDGE_DIR)
     tool_policy = _load_tool_policy(KNOWLEDGE_DIR)
     briefing_trigger = _load_briefing_trigger(KNOWLEDGE_DIR)
-
-    # ------------------------------------------------------------------
-    # Multi-user: dynamic key store + usage metering
-    # Both are created regardless of transport so stdio dev can also
-    # exercise apikeys_* tools without auth (god-mode fallback).
-    key_store = KeyStore(KEY_STORE_PATH)
-    usage_meter = UsageMeter(USAGE_STORE_PATH)
 
     if TRANSPORT == "stdio":
         # Local dev: no HTTP, no auth. Tools fall back to god-mode.
@@ -268,6 +271,8 @@ def _build_mcp() -> FastMCP:
     )
 
     register_knowledge_tools(mcp, KNOWLEDGE_DIR, tool_policy=tool_policy)
+    register_maintain_tools(mcp, KNOWLEDGE_DIR)
+    register_meta_tools(mcp, KNOWLEDGE_DIR)
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
     register_briefing_tools(mcp, KNOWLEDGE_DIR, briefing_trigger=briefing_trigger)
     register_secrets_tools(mcp, KNOWLEDGE_DIR)
@@ -319,10 +324,13 @@ def _build_app():
         async with mcp.session_manager.run():
             yield
 
+    admin_routes = build_admin_routes(key_store, ADMIN_SECRET) if ADMIN_SECRET else []
+
     return Starlette(
         debug=inner.debug,
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
+            *admin_routes,
             *inner.routes,  # /mcp (streamable HTTP) + any auth metadata routes
         ],
         middleware=inner.user_middleware,  # Bearer auth + auth context
