@@ -265,10 +265,13 @@ def _build_mcp() -> FastMCP:
 
     # Register multi-user helpers so knowledge tools can resolve user dirs
     # and meter calls against the active key.
+    # Pass yaml_verifier (not the pre-built yaml_user_index snapshot) so
+    # get_current_user_id() reads the live config on every call and is not
+    # stale after hot-reloads that add/change user_id entries (IDOR fix).
     _perms.configure(
-        yaml_user_index=yaml_user_index,
         key_store=key_store,
         usage_meter=usage_meter,
+        yaml_verifier=yaml_verifier if TRANSPORT != "stdio" else None,
     )
 
     register_knowledge_tools(mcp, KNOWLEDGE_DIR, tool_policy=tool_policy)
@@ -346,9 +349,39 @@ def _build_app():
 
 def main():
     """Entry point. Honors MCP_TRANSPORT env (`stdio` or `http`)."""
+    import logging as _logging
+    _startup_log = _logging.getLogger(__name__)
+
     if TRANSPORT == "stdio":
+        # ── Security warning: stdio bypasses all authentication ─────────────
+        # In stdio mode the server has no HTTP layer and no bearer token
+        # middleware. _perms._current_scopes() falls back to god-mode ("*"),
+        # meaning ANY local process that connects gets full unrestricted access
+        # to all tools. This is intentional for single-user local dev but MUST
+        # NOT be used in production or multi-user environments.
+        _startup_log.warning(
+            "\n"
+            "╔══════════════════════════════════════════════════════════╗\n"
+            "║  WARNING: mcp-brain running in STDIO mode                ║\n"
+            "║  Authentication is BYPASSED — all tools run as god-mode  ║\n"
+            "║  Use TRANSPORT=http with bearer tokens for production     ║\n"
+            "╚══════════════════════════════════════════════════════════╝"
+        )
         mcp.run(transport="stdio")
         return
+
+    # ── Security check: warn if binding to all interfaces ───────────────────
+    if HOST == "0.0.0.0":
+        _startup_log.warning(
+            "\n"
+            "╔══════════════════════════════════════════════════════════╗\n"
+            "║  WARNING: mcp-brain is binding to 0.0.0.0               ║\n"
+            "║  The server is reachable on ALL network interfaces.      ║\n"
+            "║  Never expose mcp-brain directly to the internet.        ║\n"
+            "║  Use a reverse proxy (nginx/Caddy) with TLS in front.    ║\n"
+            "║  Set MCP_HOST=127.0.0.1 for localhost-only binding.      ║\n"
+            "╚══════════════════════════════════════════════════════════╝"
+        )
 
     import uvicorn
 

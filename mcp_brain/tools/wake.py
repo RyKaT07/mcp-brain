@@ -28,6 +28,7 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.tools._perms import ALL, allowed_subscopes, has_scope, require
+from mcp_brain.tools.briefing import _sanitize_meta_value
 
 # Type alias for the scope check mode used in _TOOL_SCOPE_PREFIXES.
 # "exact"   → has_scope(scope) — single or two-segment exact/wildcard check
@@ -234,8 +235,8 @@ def register_wake_tools(
             if "timezone" not in user:
                 warnings.append("'user.timezone' not set in meta.yaml")
 
-        parts.append(f"# Brain activated — {user.get('name', 'User')}")
-        parts.append(f"Timezone: {user.get('timezone', 'unknown')}")
+        parts.append(f"# Brain activated — {_sanitize_meta_value(user.get('name', 'User'))}")
+        parts.append(f"Timezone: {_sanitize_meta_value(user.get('timezone', 'unknown'))}")
         parts.append("")
 
         # ── Preferences ────────────────────────────────────────────
@@ -248,7 +249,7 @@ def register_wake_tools(
         if prefs:
             parts.append("## Preferences")
             for k, v in prefs.items():
-                parts.append(f"- {k}: {v}")
+                parts.append(f"- {k}: {_sanitize_meta_value(v)}")
             parts.append("")
 
         # ── Projects (filtered by token permissions) ───────────────
@@ -281,7 +282,7 @@ def register_wake_tools(
             if proj_meta:
                 parts.append(f"## {s}")
                 for k, v in proj_meta.items():
-                    parts.append(f"- {k}: {v}")
+                    parts.append(f"- {k}: {_sanitize_meta_value(v)}")
                 parts.append("")
 
             scope_dir = knowledge_dir / s

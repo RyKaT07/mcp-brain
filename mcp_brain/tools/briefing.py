@@ -10,6 +10,17 @@ from mcp.server.fastmcp import FastMCP
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.tools._perms import ALL, allowed_subscopes, require
 
+
+def _sanitize_meta_value(v: object) -> str:
+    """Sanitize a meta.yaml value before embedding in briefing output.
+
+    Strips newlines and carriage returns to prevent adversarial content in
+    meta.yaml (e.g. user.name) from injecting fake system instructions into
+    the briefing f-string output.
+    """
+    return str(v).replace("\n", " ").replace("\r", "").strip()
+
+
 _GET_BRIEFING_BASE_DESCRIPTION = """Get a contextual briefing based on meta.yaml and knowledge files.
 
         Use this at the start of a session to load relevant context.
@@ -53,14 +64,14 @@ def register_briefing_tools(
 
         # Always include core identity (preamble is shared across all tokens)
         user = meta.get("user", {})
-        parts.append(f"# Briefing for {user.get('name', 'User')}")
-        parts.append(f"Timezone: {user.get('timezone', 'unknown')}")
+        parts.append(f"# Briefing for {_sanitize_meta_value(user.get('name', 'User'))}")
+        parts.append(f"Timezone: {_sanitize_meta_value(user.get('timezone', 'unknown'))}")
         parts.append("")
 
         # Preferences
         prefs = meta.get("preferences", {})
         if prefs:
-            pref_lines = [f"- {k}: {v}" for k, v in prefs.items()]
+            pref_lines = [f"- {k}: {_sanitize_meta_value(v)}" for k, v in prefs.items()]
             parts.append("## Preferences")
             parts.extend(pref_lines)
             parts.append("")
@@ -78,7 +89,7 @@ def register_briefing_tools(
             if proj_meta:
                 parts.append(f"## {s}")
                 for k, v in proj_meta.items():
-                    parts.append(f"- {k}: {v}")
+                    parts.append(f"- {k}: {_sanitize_meta_value(v)}")
                 parts.append("")
 
             # List available knowledge files for this scope
