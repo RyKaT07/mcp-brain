@@ -3,3 +3,12 @@ repos:
     rev: v8.16.0
     hooks:
       - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: pip-audit
+        name: pip-audit
+        entry: python3 -m pip_audit
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
