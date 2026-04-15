@@ -1,16 +1,4 @@
-.PHONY: audit install dev test lint
+.PHONY: sast
 
-audit:
-	python3 -m pip_audit
-
-install:
-	pip install -e ".[dev,integrations,scrapers]"
-
-dev:
-	uvicorn mcp_brain.server:app --reload
-
-test:
-	pytest
-
-lint:
-	ruff check .
+sast:
+	pysemgrep --config p/security-audit .

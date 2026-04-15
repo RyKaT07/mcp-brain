@@ -1,0 +1,10 @@
+# Semgrep ignore patterns — exclude build artifacts and dependencies
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+panel/.next/
+panel/node_modules/
