@@ -19,7 +19,7 @@ from pathlib import PurePosixPath
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote
 from urllib.request import HTTPBasicAuthHandler, HTTPPasswordMgrWithDefaultRealm, Request, build_opener, urlopen
-from xml.etree import ElementTree as ET
+from defusedxml.ElementTree import fromstring as ET_fromstring
 
 from mcp.server.fastmcp import FastMCP
 
@@ -123,7 +123,7 @@ def register_nextcloud_tools(
 
     def _parse_propfind(xml_bytes: bytes, request_path: str) -> list[dict]:
         """Parse PROPFIND XML response into list of entries."""
-        root = ET.fromstring(xml_bytes)
+        root = ET_fromstring(xml_bytes)
         entries = []
         # Normalize request path for comparison (skip self-entry)
         req_parts = PurePosixPath(unquote(request_path.strip("/")))

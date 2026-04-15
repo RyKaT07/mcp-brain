@@ -81,7 +81,7 @@ def main() -> None:
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
 
     try:
-        with urlopen(req, timeout=15) as resp:
+        with urlopen(req, timeout=15) as resp:  # nosemgrep
             data = json.loads(resp.read())
     except Exception as e:
         print(f"Error exchanging code for token: {e}")

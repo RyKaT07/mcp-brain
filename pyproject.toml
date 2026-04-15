@@ -9,6 +9,7 @@ dependencies = [
     "pydantic>=2.0",
     "starlette>=0.40",
     "uvicorn[standard]>=0.30.0",
+    "defusedxml>=0.7.1",
 ]
 
 [project.optional-dependencies]
