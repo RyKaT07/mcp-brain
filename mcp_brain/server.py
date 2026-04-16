@@ -54,6 +54,16 @@ from mcp_brain.search import SearchIndex
 
 KNOWLEDGE_DIR = Path(os.getenv("MCP_KNOWLEDGE_DIR", "./knowledge"))
 AUTH_CONFIG_PATH = Path(os.getenv("MCP_AUTH_CONFIG", "./config/auth.yaml"))
+
+# Support inline auth config via env var — used by per-user container
+# provisioning where the panel passes auth.yaml content directly.
+# If set, write it to AUTH_CONFIG_PATH so the rest of the startup path
+# (YamlTokenVerifier) works unchanged.
+_AUTH_YAML_INLINE = os.getenv("MCP_AUTH_YAML", "")
+if _AUTH_YAML_INLINE:
+    AUTH_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    AUTH_CONFIG_PATH.write_text(_AUTH_YAML_INLINE, encoding="utf-8")
+
 OAUTH_STORE_PATH = Path(os.getenv("MCP_OAUTH_STORE", "./data/oauth-state.json"))
 KEY_STORE_PATH = Path(os.getenv("MCP_KEY_STORE", "./data/keys.json"))
 USAGE_STORE_PATH = Path(os.getenv("MCP_USAGE_STORE", "./data/usage.json"))
