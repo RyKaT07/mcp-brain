@@ -902,14 +902,16 @@ def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
         _save_session(session_path, session)
 
         reason = proposal_raw.get("reason", "")
-        return (
-            f"**Proposed change** for `{file_key}`"
-            + (f" § `{section}`" if section else "")
-            + f"\n_{reason}_\n\n"
-            f"```diff\n{diff_text}\n```\n\n"
-            f"Call `maintain_confirm(session_id='{session_id}')` to apply "
-            f"or `maintain_skip(session_id='{session_id}')` to skip."
-        )
+        return json.dumps({
+            "session_id": session_id,
+            "has_change": True,
+            "before": old_text,
+            "after": new_text,
+            "section": section,
+            "file": file_key,
+            "reason": reason,
+            "diff": diff_text,
+        })
 
     @mcp.tool()
     def maintain_confirm(session_id: str) -> str:
