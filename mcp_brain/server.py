@@ -30,8 +30,14 @@ from pathlib import Path
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import FastMCP
 
+from mcp_brain.admin import build_admin_routes
 from mcp_brain.auth import YamlTokenVerifier
+from mcp_brain.logging_middleware import MCPLoggingMiddleware
+from mcp_brain.keystore import KeyStore
 from mcp_brain.oauth import ChainedProvider, register_oauth_consent_route
+from mcp_brain.usage import UsageMeter
+from mcp_brain.tools import _perms
+from mcp_brain.tools.apikeys import register_apikeys_tools
 from mcp_brain.tools.briefing import register_briefing_tools
 from mcp_brain.tools.inbox import register_inbox_tools
 from mcp_brain.tools.knowledge import register_knowledge_tools
@@ -40,12 +46,29 @@ from mcp_brain.tools.nextcloud import register_nextcloud_tools
 from mcp_brain.tools.gcal import register_gcal_tools
 from mcp_brain.tools.todoist import register_todoist_tools
 from mcp_brain.tools.trello import register_trello_tools
+from mcp_brain.tools.maintain import register_maintain_tools
+from mcp_brain.tools.meta import register_meta_tools
+from mcp_brain.tools.search import register_search_tools
 from mcp_brain.tools.wake import register_wake_tools
+from mcp_brain.search import SearchIndex
 
 KNOWLEDGE_DIR = Path(os.getenv("MCP_KNOWLEDGE_DIR", "./knowledge"))
 AUTH_CONFIG_PATH = Path(os.getenv("MCP_AUTH_CONFIG", "./config/auth.yaml"))
+
+# Support inline auth config via env var — used by per-user container
+# provisioning where the panel passes auth.yaml content directly.
+# If set, write it to AUTH_CONFIG_PATH so the rest of the startup path
+# (YamlTokenVerifier) works unchanged.
+_AUTH_YAML_INLINE = os.getenv("MCP_AUTH_YAML", "")
+if _AUTH_YAML_INLINE:
+    AUTH_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    AUTH_CONFIG_PATH.write_text(_AUTH_YAML_INLINE, encoding="utf-8")
+
 OAUTH_STORE_PATH = Path(os.getenv("MCP_OAUTH_STORE", "./data/oauth-state.json"))
+KEY_STORE_PATH = Path(os.getenv("MCP_KEY_STORE", "./data/keys.json"))
+USAGE_STORE_PATH = Path(os.getenv("MCP_USAGE_STORE", "./data/usage.json"))
 OAUTH_ADMIN_SECRET = os.getenv("MCP_OAUTH_ADMIN_SECRET", "")
+ADMIN_SECRET = os.getenv("MCP_ADMIN_SECRET", "")
 HOST = os.getenv("MCP_HOST", "0.0.0.0")
 PORT = int(os.getenv("MCP_PORT", "8400"))
 PUBLIC_URL = os.getenv("MCP_PUBLIC_URL", f"http://localhost:{PORT}/")
@@ -176,6 +199,12 @@ def _load_briefing_trigger(knowledge_dir: Path) -> str:
     return _extract_h2_section(content, "Read discipline — don't over-fetch")
 
 
+# Module-level key store and usage meter so both _build_mcp() and
+# _build_app() can share the same instances without threading issues.
+key_store = KeyStore(KEY_STORE_PATH)
+usage_meter = UsageMeter(USAGE_STORE_PATH)
+
+
 def _build_mcp() -> FastMCP:
     """Construct the FastMCP instance, with bearer auth on HTTP only.
 
@@ -205,13 +234,23 @@ def _build_mcp() -> FastMCP:
             port=PORT,
             instructions=instructions,
         )
+        yaml_user_index: dict[str, str] = {}
     else:
         yaml_verifier = YamlTokenVerifier(AUTH_CONFIG_PATH)
+        # Build yaml_user_index: {token_entry.id: user_id} for yaml
+        # tokens that have an explicit user_id set. Used by
+        # _perms.get_current_user_id() for multi-user knowledge routing.
+        yaml_user_index = {
+            entry.id: entry.user_id
+            for entry in yaml_verifier.config.tokens
+            if entry.user_id is not None
+        }
         provider = ChainedProvider(
             store_path=OAUTH_STORE_PATH,
             yaml_verifier=yaml_verifier,
             admin_secret=OAUTH_ADMIN_SECRET,
             public_url=PUBLIC_URL,
+            key_store=key_store,
         )
         resource_server_url = str(PUBLIC_URL).rstrip("/") + "/mcp"
         mcp = FastMCP(
@@ -236,10 +275,27 @@ def _build_mcp() -> FastMCP:
         # to the inner Starlette at app-build time.
         register_oauth_consent_route(mcp, provider)
 
-    register_knowledge_tools(mcp, KNOWLEDGE_DIR, tool_policy=tool_policy)
+    # Register multi-user helpers so knowledge tools can resolve user dirs
+    # and meter calls against the active key.
+    # Pass yaml_verifier (not the pre-built yaml_user_index snapshot) so
+    # get_current_user_id() reads the live config on every call and is not
+    # stale after hot-reloads that add/change user_id entries (IDOR fix).
+    _perms.configure(
+        key_store=key_store,
+        usage_meter=usage_meter,
+        yaml_verifier=yaml_verifier if TRANSPORT != "stdio" else None,
+    )
+
+    search_index = SearchIndex()
+    search_index.build(KNOWLEDGE_DIR)
+
+    register_knowledge_tools(mcp, KNOWLEDGE_DIR, tool_policy=tool_policy, search_index=search_index)
+    register_maintain_tools(mcp, KNOWLEDGE_DIR)
+    register_meta_tools(mcp, KNOWLEDGE_DIR)
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
     register_briefing_tools(mcp, KNOWLEDGE_DIR, briefing_trigger=briefing_trigger)
     register_secrets_tools(mcp, KNOWLEDGE_DIR)
+    register_apikeys_tools(mcp, key_store, usage_meter)
     if TODOIST_API_KEY:
         register_todoist_tools(mcp, TODOIST_API_KEY)
     if NEXTCLOUD_URL and NEXTCLOUD_USER and NEXTCLOUD_PASSWORD:
@@ -248,6 +304,7 @@ def _build_mcp() -> FastMCP:
         register_trello_tools(mcp, TRELLO_API_KEY, TRELLO_API_TOKEN)
     if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REFRESH_TOKEN:
         register_gcal_tools(mcp, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN)
+    register_search_tools(mcp, KNOWLEDGE_DIR, search_index)
     # brain_wake must be registered LAST so its tool inventory snapshot
     # captures every tool registered above (including conditional ones).
     register_wake_tools(mcp, KNOWLEDGE_DIR, briefing_trigger=briefing_trigger)
@@ -287,22 +344,60 @@ def _build_app():
         async with mcp.session_manager.run():
             yield
 
-    return Starlette(
+    admin_routes = build_admin_routes(key_store, ADMIN_SECRET) if ADMIN_SECRET else []
+
+    outer = Starlette(
         debug=inner.debug,
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
+            *admin_routes,
             *inner.routes,  # /mcp (streamable HTTP) + any auth metadata routes
         ],
         middleware=inner.user_middleware,  # Bearer auth + auth context
         lifespan=lifespan,
     )
 
+    # Wrap with structured tool-call logging.  MCPLoggingMiddleware buffers
+    # the request body so it can inspect JSON-RPC method + tool name without
+    # interfering with the downstream handler.
+    return MCPLoggingMiddleware(outer)  # type: ignore[return-value]
+
 
 def main():
     """Entry point. Honors MCP_TRANSPORT env (`stdio` or `http`)."""
+    import logging as _logging
+    _startup_log = _logging.getLogger(__name__)
+
     if TRANSPORT == "stdio":
+        # ── Security warning: stdio bypasses all authentication ─────────────
+        # In stdio mode the server has no HTTP layer and no bearer token
+        # middleware. _perms._current_scopes() falls back to god-mode ("*"),
+        # meaning ANY local process that connects gets full unrestricted access
+        # to all tools. This is intentional for single-user local dev but MUST
+        # NOT be used in production or multi-user environments.
+        _startup_log.warning(
+            "\n"
+            "╔══════════════════════════════════════════════════════════╗\n"
+            "║  WARNING: mcp-brain running in STDIO mode                ║\n"
+            "║  Authentication is BYPASSED — all tools run as god-mode  ║\n"
+            "║  Use TRANSPORT=http with bearer tokens for production     ║\n"
+            "╚══════════════════════════════════════════════════════════╝"
+        )
         mcp.run(transport="stdio")
         return
+
+    # ── Security check: warn if binding to all interfaces ───────────────────
+    if HOST == "0.0.0.0":
+        _startup_log.warning(
+            "\n"
+            "╔══════════════════════════════════════════════════════════╗\n"
+            "║  WARNING: mcp-brain is binding to 0.0.0.0               ║\n"
+            "║  The server is reachable on ALL network interfaces.      ║\n"
+            "║  Never expose mcp-brain directly to the internet.        ║\n"
+            "║  Use a reverse proxy (nginx/Caddy) with TLS in front.    ║\n"
+            "║  Set MCP_HOST=127.0.0.1 for localhost-only binding.      ║\n"
+            "╚══════════════════════════════════════════════════════════╝"
+        )
 
     import uvicorn
 

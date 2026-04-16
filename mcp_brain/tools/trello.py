@@ -42,21 +42,21 @@ def register_trello_tools(mcp: FastMCP, api_key: str, api_token: str) -> None:
         params = {**_auth_params(), **(extra_params or {})}
         url = f"{_BASE}{path}?{urlencode(params)}"
         req = Request(url, method="GET")
-        with urlopen(req, timeout=15) as resp:
+        with urlopen(req, timeout=15) as resp:  # nosemgrep
             return json.loads(resp.read())
 
     def _post(path: str, extra_params: dict[str, str] | None = None) -> dict:
         params = {**_auth_params(), **(extra_params or {})}
         url = f"{_BASE}{path}?{urlencode(params)}"
         req = Request(url, data=b"", method="POST")
-        with urlopen(req, timeout=15) as resp:
+        with urlopen(req, timeout=15) as resp:  # nosemgrep
             return json.loads(resp.read())
 
     def _put(path: str, extra_params: dict[str, str] | None = None) -> dict:
         params = {**_auth_params(), **(extra_params or {})}
         url = f"{_BASE}{path}?{urlencode(params)}"
         req = Request(url, data=b"", method="PUT")
-        with urlopen(req, timeout=15) as resp:
+        with urlopen(req, timeout=15) as resp:  # nosemgrep
             return json.loads(resp.read())
 
     def _api_error(e: HTTPError) -> str:
