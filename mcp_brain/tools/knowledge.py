@@ -8,6 +8,7 @@ Git auto-commit after each write for history.
 import fcntl
 import logging
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from mcp_brain.search import SearchIndex
 from mcp_brain.tools._perms import (
     ALL,
     allowed_subscopes,
+    get_current_user_id,
     get_effective_knowledge_dir,
     meter_call,
     require,
@@ -354,10 +356,17 @@ def register_knowledge_tools(
                 _git_commit(effective_dir, filepath, f"update {scope}/{project} § {section}")
 
                 rebuilt = _rebuild_markdown(sections)
-                if search_index is not None:
-                    search_index.update_file(scope, project, rebuilt)
-                if rel_graph is not None:
-                    rel_graph.update_file(scope, project, rebuilt)
+                _user_id = get_current_user_id()
+                if _user_id is not None:
+                    if search_index is not None:
+                        search_index.update_file_for_user(_user_id, scope, project, rebuilt)
+                    if rel_graph is not None:
+                        rel_graph.update_file_for_user(_user_id, scope, project, rebuilt)
+                else:
+                    if search_index is not None:
+                        search_index.update_file(scope, project, rebuilt)
+                    if rel_graph is not None:
+                        rel_graph.update_file(scope, project, rebuilt)
 
                 return f"Updated {scope}/{project} § {section}"
             finally:
@@ -507,10 +516,17 @@ def register_knowledge_tools(
                     f"(`cd /data/knowledge && git status`)."
                 )
 
-        if search_index is not None:
-            search_index.build(effective_dir)
-        if rel_graph is not None:
-            rel_graph.build(effective_dir)
+        _user_id = get_current_user_id()
+        if _user_id is not None:
+            if search_index is not None:
+                search_index.build_user(_user_id, effective_dir)
+            if rel_graph is not None:
+                rel_graph.build_user(_user_id, effective_dir)
+        else:
+            if search_index is not None:
+                search_index.build(effective_dir)
+            if rel_graph is not None:
+                rel_graph.build(effective_dir)
 
         return (
             f"Reverted {len(reverted)} commit(s):\n"
@@ -718,10 +734,17 @@ def register_knowledge_tools(
         except FileNotFoundError:
             pass  # git not installed — stdio dev mode, skip silently
 
-        if search_index is not None:
-            search_index.remove_file(scope, project)
-        if rel_graph is not None:
-            rel_graph.remove_file(scope, project)
+        _user_id = get_current_user_id()
+        if _user_id is not None:
+            if search_index is not None:
+                search_index.remove_file_for_user(_user_id, scope, project)
+            if rel_graph is not None:
+                rel_graph.remove_file_for_user(_user_id, scope, project)
+        else:
+            if search_index is not None:
+                search_index.remove_file(scope, project)
+            if rel_graph is not None:
+                rel_graph.remove_file(scope, project)
 
         return f"Deleted {scope}/{project}"
 
@@ -851,3 +874,149 @@ def register_knowledge_tools(
         if scope:
             header += f" (scope: {scope})"
         return header + "\n\n" + "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # scope_rename — atomic directory rename + reference updates
+    # ------------------------------------------------------------------
+
+    @mcp.tool(
+        description=(
+            "Rename a knowledge scope: moves knowledge/{old_name}/ → knowledge/{new_name}/, "
+            "updates the matching key in meta.yaml projects section, updates all "
+            "`old_name/project` backtick cross-references in every markdown file, "
+            "and commits the change as a single git commit. "
+            "Requires meta:write scope. "
+            "Args:\n"
+            "  old_name: Current scope name (must exist)\n"
+            "  new_name: New scope name (must not exist)"
+        )
+    )
+    def scope_rename(old_name: str, new_name: str) -> str:
+        """Rename a knowledge scope directory and update all references."""
+        try:
+            require("meta:write")
+        except PermissionDenied as e:
+            return str(e)
+
+        safe_old = _sanitize(old_name)
+        safe_new = _sanitize(new_name)
+
+        if not safe_old:
+            return f"Invalid old_name {old_name!r}: must contain at least one [a-zA-Z0-9_-] character."
+        if not safe_new:
+            return f"Invalid new_name {new_name!r}: must contain at least one [a-zA-Z0-9_-] character."
+        if safe_old == safe_new:
+            return f"old_name and new_name resolve to the same identifier: {safe_old!r}"
+
+        err = _validate_scope_writable(safe_old)
+        if err:
+            return err
+        err = _validate_scope_writable(safe_new)
+        if err:
+            return err
+
+        effective_dir = get_effective_knowledge_dir(knowledge_dir)
+        old_dir = effective_dir / safe_old
+        new_dir = effective_dir / safe_new
+
+        if not old_dir.is_dir():
+            return f"Scope '{safe_old}' not found (directory does not exist)."
+        if new_dir.exists():
+            return f"Scope '{safe_new}' already exists. Remove or rename it first."
+
+        # -- 1. Move the scope directory on disk.
+        shutil.move(str(old_dir), str(new_dir))
+
+        # -- 2. Update meta.yaml projects section.
+        meta_path = effective_dir / "meta.yaml"
+        meta_updated = False
+        if meta_path.exists():
+            try:
+                import yaml as _yaml
+                raw = meta_path.read_text(encoding="utf-8")
+                data = _yaml.safe_load(raw)
+                if isinstance(data, dict):
+                    projects = data.get("projects")
+                    if isinstance(projects, dict) and safe_old in projects:
+                        projects[safe_new] = projects.pop(safe_old)
+                        data["projects"] = projects
+                        meta_path.write_text(
+                            _yaml.dump(data, allow_unicode=True, default_flow_style=False),
+                            encoding="utf-8",
+                        )
+                        meta_updated = True
+            except Exception as exc:
+                logger.warning("Failed to update meta.yaml during scope rename: %s", exc)
+
+        # -- 3. Update `old_name/project` backtick cross-references in all .md files.
+        ref_re = re.compile(rf"`{re.escape(safe_old)}/([a-zA-Z0-9_-]+)`")
+        updated_refs: list[Path] = []
+        for md_file in effective_dir.rglob("*.md"):
+            try:
+                text = md_file.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            new_text = ref_re.sub(rf"`{safe_new}/\1`", text)
+            if new_text != text:
+                md_file.write_text(new_text, encoding="utf-8")
+                updated_refs.append(md_file)
+
+        # -- 4. Stage all changes and commit.
+        try:
+            # Stage: new dir (additions), old dir deletion, meta.yaml, ref files.
+            add_targets: list[str] = [str(new_dir)]
+            if meta_updated:
+                add_targets.append(str(meta_path))
+            for f in updated_refs:
+                add_targets.append(str(f))
+
+            add_result = subprocess.run(
+                ["git", "add"] + add_targets,
+                cwd=effective_dir,
+                capture_output=True,
+                text=True,
+            )
+            # Also stage the old dir deletion (git add won't pick up removals).
+            subprocess.run(
+                ["git", "rm", "-r", "--cached", "--ignore-unmatch", str(old_dir)],
+                cwd=effective_dir,
+                capture_output=True,
+                text=True,
+            )
+
+            if add_result.returncode == 0:
+                commit_result = subprocess.run(
+                    ["git", "commit", "-m", f"rename scope {safe_old} → {safe_new}"],
+                    cwd=effective_dir,
+                    capture_output=True,
+                    text=True,
+                )
+                if commit_result.returncode != 0:
+                    logger.warning(
+                        "git commit failed after scope rename %s → %s: %s",
+                        safe_old,
+                        safe_new,
+                        (commit_result.stderr or commit_result.stdout or "<no output>").strip(),
+                    )
+        except FileNotFoundError:
+            pass  # git not installed — stdio dev mode, skip silently
+
+        # -- 5. Rebuild search index and relationship graph.
+        _user_id = get_current_user_id()
+        if _user_id is not None:
+            if search_index is not None:
+                search_index.build_user(_user_id, effective_dir)
+            if rel_graph is not None:
+                rel_graph.build_user(_user_id, effective_dir)
+        else:
+            if search_index is not None:
+                search_index.build(effective_dir)
+            if rel_graph is not None:
+                rel_graph.build(effective_dir)
+
+        parts = [f"Renamed scope '{safe_old}' → '{safe_new}'."]
+        if meta_updated:
+            parts.append("meta.yaml projects key updated.")
+        if updated_refs:
+            parts.append(f"Updated cross-references in {len(updated_refs)} file(s).")
+        return " ".join(parts)
