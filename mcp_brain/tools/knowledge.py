@@ -17,6 +17,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import PermissionDenied
+from mcp_brain.graph import RelationshipGraph
 from mcp_brain.search import SearchIndex
 from mcp_brain.tools._perms import (
     ALL,
@@ -251,6 +252,7 @@ def register_knowledge_tools(
     *,
     tool_policy: str = "",
     search_index: SearchIndex | None = None,
+    rel_graph: RelationshipGraph | None = None,
 ):
     """Register knowledge_* tools on the MCP server.
 
@@ -370,8 +372,11 @@ def register_knowledge_tools(
 
                 _git_commit(effective_dir, filepath, f"update {scope}/{project} § {section}")
 
+                rebuilt = _rebuild_markdown(sections)
                 if search_index is not None:
-                    search_index.update_file(scope, project, _rebuild_markdown(sections))
+                    search_index.update_file(scope, project, rebuilt)
+                if rel_graph is not None:
+                    rel_graph.update_file(scope, project, rebuilt)
 
                 return f"Updated {scope}/{project} § {section}"
             finally:
@@ -523,6 +528,8 @@ def register_knowledge_tools(
 
         if search_index is not None:
             search_index.build(effective_dir)
+        if rel_graph is not None:
+            rel_graph.build(effective_dir)
 
         return (
             f"Reverted {len(reverted)} commit(s):\n"
@@ -729,6 +736,8 @@ def register_knowledge_tools(
 
         if search_index is not None:
             search_index.remove_file(scope, project)
+        if rel_graph is not None:
+            rel_graph.remove_file(scope, project)
 
         return f"Deleted {scope}/{project}"
 
