@@ -48,7 +48,9 @@ from mcp_brain.tools.todoist import register_todoist_tools
 from mcp_brain.tools.trello import register_trello_tools
 from mcp_brain.tools.maintain import register_maintain_tools
 from mcp_brain.tools.meta import register_meta_tools
+from mcp_brain.tools.search import register_search_tools
 from mcp_brain.tools.wake import register_wake_tools
+from mcp_brain.search import SearchIndex
 
 KNOWLEDGE_DIR = Path(os.getenv("MCP_KNOWLEDGE_DIR", "./knowledge"))
 AUTH_CONFIG_PATH = Path(os.getenv("MCP_AUTH_CONFIG", "./config/auth.yaml"))
@@ -274,7 +276,10 @@ def _build_mcp() -> FastMCP:
         yaml_verifier=yaml_verifier if TRANSPORT != "stdio" else None,
     )
 
-    register_knowledge_tools(mcp, KNOWLEDGE_DIR, tool_policy=tool_policy)
+    search_index = SearchIndex()
+    search_index.build(KNOWLEDGE_DIR)
+
+    register_knowledge_tools(mcp, KNOWLEDGE_DIR, tool_policy=tool_policy, search_index=search_index)
     register_maintain_tools(mcp, KNOWLEDGE_DIR)
     register_meta_tools(mcp, KNOWLEDGE_DIR)
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
@@ -289,6 +294,7 @@ def _build_mcp() -> FastMCP:
         register_trello_tools(mcp, TRELLO_API_KEY, TRELLO_API_TOKEN)
     if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REFRESH_TOKEN:
         register_gcal_tools(mcp, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN)
+    register_search_tools(mcp, KNOWLEDGE_DIR, search_index)
     # brain_wake must be registered LAST so its tool inventory snapshot
     # captures every tool registered above (including conditional ones).
     register_wake_tools(mcp, KNOWLEDGE_DIR, briefing_trigger=briefing_trigger)
