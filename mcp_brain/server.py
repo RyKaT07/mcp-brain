@@ -44,8 +44,8 @@ from mcp_brain.tools.knowledge import register_knowledge_tools
 from mcp_brain.tools.secrets_schema import register_secrets_tools
 from mcp_brain.tools.nextcloud import register_nextcloud_tools
 from mcp_brain.tools.gcal import register_gcal_tools
-from mcp_brain.tools.todoist import register_todoist_tools
-from mcp_brain.tools.trello import register_trello_tools
+from mcp_brain.tools.todoist import fetch_tasks_for_index, register_todoist_tools
+from mcp_brain.tools.trello import fetch_cards_for_index, register_trello_tools
 from mcp_brain.tools.maintain import register_maintain_tools
 from mcp_brain.tools.meta import register_meta_tools
 from mcp_brain.tools.search import register_search_tools
@@ -291,6 +291,17 @@ def _build_mcp() -> FastMCP:
     search_index = SearchIndex()
     search_index.build(KNOWLEDGE_DIR)
 
+    # Optionally index Todoist tasks and Trello cards if API keys are present.
+    # Both fetches are gracefully skipped on missing keys or API errors.
+    if TODOIST_API_KEY:
+        tasks = fetch_tasks_for_index(TODOIST_API_KEY)
+        if tasks:
+            search_index.index_todoist_tasks(tasks)
+    if TRELLO_API_KEY and TRELLO_API_TOKEN:
+        cards = fetch_cards_for_index(TRELLO_API_KEY, TRELLO_API_TOKEN)
+        if cards:
+            search_index.index_trello_cards(cards)
+
     rel_graph = RelationshipGraph()
     rel_graph.build(KNOWLEDGE_DIR)
 
@@ -298,7 +309,17 @@ def _build_mcp() -> FastMCP:
     register_maintain_tools(mcp, KNOWLEDGE_DIR)
     register_meta_tools(mcp, KNOWLEDGE_DIR)
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
-    register_briefing_tools(mcp, KNOWLEDGE_DIR, briefing_trigger=briefing_trigger)
+    register_briefing_tools(
+        mcp,
+        KNOWLEDGE_DIR,
+        briefing_trigger=briefing_trigger,
+        gcal_client_id=GOOGLE_CLIENT_ID,
+        gcal_client_secret=GOOGLE_CLIENT_SECRET,
+        gcal_refresh_token=GOOGLE_REFRESH_TOKEN,
+        todoist_api_key=TODOIST_API_KEY,
+        trello_api_key=TRELLO_API_KEY,
+        trello_api_token=TRELLO_API_TOKEN,
+    )
     register_secrets_tools(mcp, KNOWLEDGE_DIR)
     register_apikeys_tools(mcp, key_store, usage_meter)
 
