@@ -13,7 +13,12 @@ import yaml
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import PermissionDenied
+from mcp_brain.rate_limit import RateLimiter
 from mcp_brain.tools._perms import require
+
+_rl_add = RateLimiter("inbox_add", 5.0)
+_rl_accept = RateLimiter("inbox_accept", 5.0)
+_rl_reject = RateLimiter("inbox_reject", 5.0)
 
 
 INBOX_DIR_NAME = "inbox"
@@ -133,6 +138,9 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
             suggested_target: Suggested knowledge file (e.g. 'school/power-electronics')
             suggested_section: Suggested section within that file
         """
+        rate_err = _rl_add.check()
+        if rate_err:
+            return rate_err
         try:
             require("inbox:write")
         except PermissionDenied as e:
@@ -165,6 +173,9 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
         Args:
             item_id: The item ID to accept
         """
+        rate_err = _rl_accept.check()
+        if rate_err:
+            return rate_err
         try:
             require("inbox:write")
         except PermissionDenied as e:
@@ -241,6 +252,9 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
         Args:
             item_id: The item ID to reject
         """
+        rate_err = _rl_reject.check()
+        if rate_err:
+            return rate_err
         try:
             require("inbox:write")
         except PermissionDenied as e:

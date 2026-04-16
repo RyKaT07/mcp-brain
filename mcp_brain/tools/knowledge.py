@@ -9,15 +9,13 @@ import fcntl
 import logging
 import re
 import subprocess
-import threading
-import time
 from pathlib import Path
 
-from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.graph import RelationshipGraph
+from mcp_brain.rate_limit import RateLimiter
 from mcp_brain.search import SearchIndex
 from mcp_brain.tools._perms import (
     ALL,
@@ -30,33 +28,13 @@ from mcp_brain.tools._perms import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Rate-limiting for knowledge_undo — at most 1 call per token per 30 s.
-# Each undo triggers up to 10 blocking subprocess calls; without a rate limit
-# a single token could saturate the event loop.
+# Per-tool rate limiters — at most 1 call per token per N seconds.
+# knowledge_undo is expensive (up to 10 subprocess calls); knowledge_update
+# and knowledge_delete write to disk.
 
-_UNDO_RATE_LIMIT_SECONDS: float = 30.0
-_undo_rate_lock = threading.Lock()
-_last_undo: dict[str, float] = {}  # {token_id: last_call_epoch}
-
-
-def _check_undo_rate_limit() -> str | None:
-    """Return an error string if the caller is over the undo rate limit."""
-    tok = get_access_token()
-    if tok is None:
-        return None  # stdio / god-mode — no limit
-    token_id = tok.client_id
-    now = time.monotonic()
-    with _undo_rate_lock:
-        last = _last_undo.get(token_id)
-        if last is not None and (now - last) < _UNDO_RATE_LIMIT_SECONDS:
-            remaining = _UNDO_RATE_LIMIT_SECONDS - (now - last)
-            return (
-                f"Rate limited: knowledge_undo may be called at most once every "
-                f"{int(_UNDO_RATE_LIMIT_SECONDS)} seconds per token. "
-                f"Retry in {remaining:.1f}s."
-            )
-        _last_undo[token_id] = now
-    return None
+_rl_update = RateLimiter("knowledge_update", 5.0)
+_rl_delete = RateLimiter("knowledge_delete", 5.0)
+_rl_undo = RateLimiter("knowledge_undo", 30.0)
 
 
 def _git_commit(knowledge_dir: Path, filepath: Path, message: str) -> None:
@@ -329,6 +307,9 @@ def register_knowledge_tools(
             section: H2 section title to update (e.g. 'architecture', 'current_tasks')
             content: New markdown content for that section (without the ## header)
         """
+        rate_err = _rl_update.check()
+        if rate_err:
+            return rate_err
         meter_call("knowledge_update")
         try:
             require(f"knowledge:write:{scope}")
@@ -451,8 +432,8 @@ def register_knowledge_tools(
         except PermissionDenied as e:
             return f"{e}. knowledge_undo requires knowledge:write:* (full write scope)."
 
-        rate_err = _check_undo_rate_limit()
-        if rate_err is not None:
+        rate_err = _rl_undo.check()
+        if rate_err:
             return rate_err
 
         if steps < 1:
@@ -664,6 +645,9 @@ def register_knowledge_tools(
             scope: Category — e.g. 'work', 'school', 'homelab'
             project: Project/topic name (filename without .md)
         """
+        rate_err = _rl_delete.check()
+        if rate_err:
+            return rate_err
         meter_call("knowledge_delete")
         try:
             require(f"knowledge:write:{scope}")

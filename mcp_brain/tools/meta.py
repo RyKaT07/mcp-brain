@@ -17,7 +17,10 @@ import yaml
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import PermissionDenied
+from mcp_brain.rate_limit import RateLimiter
 from mcp_brain.tools._perms import require
+
+_rl_update = RateLimiter("meta_update", 5.0)
 
 
 def _git_commit_meta(knowledge_dir: Path, meta_path: Path) -> None:
@@ -67,6 +70,9 @@ def register_meta_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
     )
     def meta_update(content: str) -> str:
         """Validate and write new meta.yaml content."""
+        rate_err = _rl_update.check()
+        if rate_err:
+            return rate_err
         try:
             require("meta:write")
         except PermissionDenied as e:
