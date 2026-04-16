@@ -65,6 +65,14 @@ services:
       # extra guard against accidental writes.
       - ./data:/data
       - ./data/auth.yaml:/data/auth.yaml:ro
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2"
+        reservations:
+          memory: 1G
+          cpus: "1"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8400/healthz"]
       interval: 30s
