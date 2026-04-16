@@ -17,6 +17,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import PermissionDenied
+from mcp_brain.search import SearchIndex
 from mcp_brain.tools._perms import (
     ALL,
     allowed_subscopes,
@@ -249,6 +250,7 @@ def register_knowledge_tools(
     knowledge_dir: Path,
     *,
     tool_policy: str = "",
+    search_index: SearchIndex | None = None,
 ):
     """Register knowledge_* tools on the MCP server.
 
@@ -367,6 +369,9 @@ def register_knowledge_tools(
                 filepath.write_text(_rebuild_markdown(sections), encoding="utf-8")
 
                 _git_commit(effective_dir, filepath, f"update {scope}/{project} § {section}")
+
+                if search_index is not None:
+                    search_index.update_file(scope, project, _rebuild_markdown(sections))
 
                 return f"Updated {scope}/{project} § {section}"
             finally:
@@ -515,6 +520,9 @@ def register_knowledge_tools(
                     f"Resolve the conflict manually inside the container "
                     f"(`cd /data/knowledge && git status`)."
                 )
+
+        if search_index is not None:
+            search_index.build(effective_dir)
 
         return (
             f"Reverted {len(reverted)} commit(s):\n"
@@ -718,6 +726,9 @@ def register_knowledge_tools(
                     )
         except FileNotFoundError:
             pass  # git not installed — stdio dev mode, skip silently
+
+        if search_index is not None:
+            search_index.remove_file(scope, project)
 
         return f"Deleted {scope}/{project}"
 
