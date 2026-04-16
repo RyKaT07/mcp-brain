@@ -1,5 +1,5 @@
 """
-HTTP admin endpoints for bearer token management and integration configuration.
+HTTP admin endpoints for bearer token management.
 
 Protected by MCP_ADMIN_SECRET (X-Admin-Secret header or
 Authorization: Bearer <ADMIN_SECRET>).
@@ -17,29 +17,16 @@ GET    /admin/tokens                   — list all tokens (no secret values)
   query: include_revoked=true (optional)
   response: { tokens: [...] }
 
-GET    /admin/integrations             — list all integrations (no secret values)
-  response: { integrations: [{name, configured, keys}] }
-
-PUT    /admin/integrations/{name}      — configure an integration
-  body: { "credentials": { "KEY": "VALUE", ... } }
-  response: { configured: true, name }
-
-DELETE /admin/integrations/{name}      — remove an integration
-  response: { configured: false, name }
-
 All endpoints return 401 if the admin secret is wrong or missing.
 """
 
 from __future__ import annotations
-
-from collections.abc import Callable
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from mcp_brain.keystore import KeyStore
-from mcp_brain.integration_store import IntegrationStore, KNOWN_INTEGRATIONS
 
 
 def _check_admin_auth(request: Request, admin_secret: str) -> bool:
@@ -57,10 +44,8 @@ def _check_admin_auth(request: Request, admin_secret: str) -> bool:
 def build_admin_routes(
     key_store: KeyStore,
     admin_secret: str,
-    integration_store: IntegrationStore | None = None,
-    on_integration_change: Callable[[str, dict[str, str] | None], None] | None = None,
 ) -> list[Route]:
-    """Return Starlette Route objects for the /admin/tokens and /admin/integrations APIs."""
+    """Return Starlette Route objects for the /admin/tokens API."""
 
     async def create_token(request: Request) -> JSONResponse:
         if not _check_admin_auth(request, admin_secret):
@@ -136,65 +121,8 @@ def build_admin_routes(
             }
         )
 
-    integration_routes: list[Route] = []
-
-    if integration_store is not None:
-        _on_change = on_integration_change or (lambda name, creds: None)
-
-        async def list_integrations(request: Request) -> JSONResponse:
-            if not _check_admin_auth(request, admin_secret):
-                return JSONResponse({"error": "Unauthorized"}, status_code=401)
-            return JSONResponse({"integrations": integration_store.list_configured()})
-
-        async def configure_integration(request: Request) -> JSONResponse:
-            if not _check_admin_auth(request, admin_secret):
-                return JSONResponse({"error": "Unauthorized"}, status_code=401)
-
-            name: str = request.path_params["name"]
-            if name not in KNOWN_INTEGRATIONS:
-                return JSONResponse(
-                    {"error": f"Unknown integration: '{name}'"},
-                    status_code=400,
-                )
-
-            try:
-                body = await request.json()
-            except Exception:
-                return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
-
-            credentials = body.get("credentials")
-            if not isinstance(credentials, dict):
-                return JSONResponse(
-                    {"error": "'credentials' must be an object"},
-                    status_code=400,
-                )
-
-            try:
-                integration_store.set(name, credentials)
-            except ValueError as exc:
-                return JSONResponse({"error": str(exc)}, status_code=400)
-
-            _on_change(name, credentials)
-            return JSONResponse({"configured": True, "name": name})
-
-        async def remove_integration(request: Request) -> JSONResponse:
-            if not _check_admin_auth(request, admin_secret):
-                return JSONResponse({"error": "Unauthorized"}, status_code=401)
-
-            name: str = request.path_params["name"]
-            integration_store.delete(name)
-            _on_change(name, None)
-            return JSONResponse({"configured": False, "name": name})
-
-        integration_routes = [
-            Route("/admin/integrations", list_integrations, methods=["GET"]),
-            Route("/admin/integrations/{name}", configure_integration, methods=["PUT"]),
-            Route("/admin/integrations/{name}", remove_integration, methods=["DELETE"]),
-        ]
-
     return [
         Route("/admin/tokens", create_token, methods=["POST"]),
         Route("/admin/tokens/{token_id}", revoke_token, methods=["DELETE"]),
         Route("/admin/tokens", list_tokens, methods=["GET"]),
-        *integration_routes,
     ]
