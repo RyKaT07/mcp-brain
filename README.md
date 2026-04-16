@@ -1,53 +1,119 @@
-# mcp-brain
+<div align="center">
 
-Personal MCP server for persistent AI memory across sessions. Multi-token bearer auth with per-scope permissions, hosted as a Docker container in a Proxmox LXC, exposed via Caddy + DDNS. Works with Claude Code, Cursor, custom GPTs, n8n — any MCP-compatible client.
+<img src="https://brainvlt.com/logo.svg" alt="BrainVlt" width="80" height="80" />
+
+# BrainVlt — mcp-brain
+
+**Persistent AI memory you own and control.**
+
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20NC-blue.svg)](LICENSE)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/rykat07/mcp-brain)
+[![MCP](https://img.shields.io/badge/Protocol-MCP-6366f1)](https://modelcontextprotocol.io)
+[![brainvlt.com](https://img.shields.io/badge/website-brainvlt.com-a855f7)](https://brainvlt.com)
+
+Give Claude, Cursor, and every other AI client a persistent memory that travels with you — self-hosted, version-controlled, and never uploaded to any third-party cloud.
+
+[Website](https://brainvlt.com) · [Docs](docs/) · [Quick start](#quick-start-any-docker-host)
+
+</div>
+
+---
+
+## What is it?
+
+mcp-brain is a personal [Model Context Protocol](https://modelcontextprotocol.io) server. Every MCP-compatible AI client — Claude Code, claude.ai, Cursor, Windsurf, custom GPTs, n8n — can read from and write to a shared knowledge store as long as it holds a valid token.
+
+Your notes stay in plain-text markdown files on a machine you control. A git repository inside the container tracks every change with a full audit trail. Nothing leaves your host.
+
+---
 
 ## Features
 
-- **Knowledge base** — markdown with H2 sections, file-locked section-level updates, git auto-commit
-- **Inbox** — staging area for scraped info, always human-reviewed before merge
-- **Briefing** — context loader from `meta.yaml` for session bootstrap
-- **Secrets schema** — knows what secrets exist and where, never knows the values
-- **Multi-token auth** — different static bearer tokens grant different permissions (full / school-only / homelab read-only / etc.)
-- **OAuth 2.1 authorization server** — so claude.ai Custom Connectors (web / iOS / Android / desktop chat) can talk to the server without a static header. DCR, PKCE, rotating refresh tokens, single-user consent page.
-- **Streamable HTTP over HTTPS** — works remotely, single Bearer header in the client's MCP config
+| | Feature | Description |
+|---|---------|-------------|
+| 🧠 | **Knowledge base** | Markdown files with H2 sections; file-locked section-level updates; git auto-commit on every write |
+| 📥 | **Inbox** | Staging area for scraped or draft info — always human-reviewed before it lands in the KB |
+| ⚡ | **Briefing** | Session bootstrap: one call loads your personal context so the AI never starts cold |
+| 🔑 | **Secrets schema** | Tells the AI which secrets exist and where; never stores the values themselves |
+| 🔒 | **Multi-token auth** | Fine-grained per-scope bearer tokens — Claude Code gets `*`, Cursor gets `knowledge:read:school` |
+| 🌐 | **OAuth 2.1 server** | DCR + PKCE + rotating refresh tokens so claude.ai Custom Connectors work without static headers |
+| 📋 | **Todoist integration** | Read and create tasks; list projects and sections |
+| 📅 | **Google Calendar** | Read events, create events, list calendars |
+| 📝 | **Nextcloud Notes** | Browse and read your Nextcloud files |
+| 🗂 | **Trello** | Read boards, lists, and cards; add cards |
+| 📊 | **Structured logging** | JSON tool-call log per request: token id, tool name, duration, HTTP status |
+| ♻️ | **Hot-reload auth** | Edit `auth.yaml` and tokens update within 5 s — no container restart |
 
-## Quick start (Proxmox VE host)
+---
 
-One command on the Proxmox host shell:
+## Supported AI clients
+
+| Client | Transport | How to connect |
+|--------|-----------|----------------|
+| **Claude Code** (CLI) | Streamable HTTP | `~/.claude.json` — bearer header |
+| **claude.ai** (web / iOS / Android) | OAuth 2.1 | Settings → Connectors → Add custom connector |
+| **Cursor** | Streamable HTTP | MCP settings — bearer header |
+| **Windsurf** | Streamable HTTP | MCP settings — bearer header |
+| **ChatGPT / custom GPTs** | Streamable HTTP | Plugin manifest — bearer header |
+| **n8n** | Streamable HTTP | MCP node — bearer header |
+| **Any MCP client** | Streamable HTTP | One URL + one header |
+
+---
+
+## Quick start (any Docker host)
+
+Runs on any Linux, macOS, or Windows machine with Docker Compose installed.
+
+```bash
+# 1. Grab the compose file and env template
+curl -fsSL https://raw.githubusercontent.com/RyKaT07/mcp-brain/main/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/RyKaT07/mcp-brain/main/.env.example -o .env
+
+# 2. Generate the required admin secret
+echo "MCP_OAUTH_ADMIN_SECRET=$(openssl rand -hex 32)" >> .env
+
+# 3. Create a minimal auth file
+mkdir -p data
+cat > data/auth.yaml <<'EOF'
+tokens:
+  - id: my-claude-code
+    token: "tok_changeme_replace_with_openssl_rand_hex_32"
+    scopes: ["*"]
+EOF
+
+# 4. Start
+docker compose pull && docker compose up -d
+
+# 5. Verify
+curl http://127.0.0.1:8400/healthz
+# → {"status":"ok"}
+```
+
+Port `8400` binds to `127.0.0.1` by default. Put Caddy, Traefik, or nginx with TLS in front before exposing it remotely. Full guide: [`docs/deployment.md`](docs/deployment.md).
+
+---
+
+## Quick start (Proxmox VE)
+
+One command on the Proxmox host shell provisions a fresh Debian LXC with Docker and mcp-brain already running:
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/RyKaT07/mcp-brain/main/scripts/proxmox-install.sh)"
 ```
 
-This creates a fresh unprivileged Debian LXC with nesting+keyctl enabled (required for Docker), then runs the in-container installer via `pct exec`. End result: a running mcp-brain on `127.0.0.1:8400` inside a new LXC, plus a printed admin bearer token and the LXC root password.
-
-Override any default with env vars:
-
-```bash
-CTID=150 CT_HOSTNAME=brain RAM_MB=2048 DISK_GB=16 \
-  bash -c "$(curl -fsSL https://raw.githubusercontent.com/RyKaT07/mcp-brain/main/scripts/proxmox-install.sh)"
-```
-
-If you already have a Debian/Ubuntu LXC or VM (or any Debian box, really), you can skip the wrapper and run the in-container installer directly:
+Or on any existing Debian/Ubuntu box:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/RyKaT07/mcp-brain/main/scripts/install.sh)
 ```
 
-After either path, put Caddy/Traefik/nginx with TLS in front of port 8400. Full walkthrough: [`docs/deployment.md`](docs/deployment.md).
+Full walkthrough: [`docs/deployment.md`](docs/deployment.md).
 
-## Update
+---
 
-```bash
-sudo bash /opt/mcp-brain/scripts/install.sh update
-```
+## Connect from Claude Code
 
-Takes a few seconds. Knowledge and tokens live in volume mounts, so rollbacks are safe. See [`docs/upgrade.md`](docs/upgrade.md).
-
-## Connect from Claude Code (laptop CLI)
-
-`~/.claude.json`:
+Add to `~/.claude.json`:
 
 ```json
 {
@@ -63,31 +129,27 @@ Takes a few seconds. Knowledge and tokens live in volume mounts, so rollbacks ar
 }
 ```
 
-## Connect from claude.ai (web / iOS / Android / desktop chat)
+## Connect from claude.ai (web / iOS / Android)
 
-claude.ai Custom Connectors speak OAuth 2.0, not raw bearer headers.
-mcp-brain runs an OAuth 2.1 authorization server on the same domain
-to handle them.
+1. **Settings → Connectors → Add custom connector**
+2. **URL:** `https://mcp.yourdomain.tld/mcp`
+3. Leave `OAuth Client ID` and `OAuth Client Secret` **empty** — Dynamic Client Registration handles this automatically
+4. Click **Add** → your browser opens the consent page → enter your `MCP_OAUTH_ADMIN_SECRET` → **Authorize**
+5. Done. Works across every Claude surface on the same account.
 
-1. Sign in at [claude.ai](https://claude.ai) → **Settings → Connectors → Add custom connector**
-2. **Name:** `mcp-brain` (or whatever you prefer)
-3. **URL:** `https://mcp.yourdomain.tld/mcp`
-4. Leave `OAuth Client ID` and `OAuth Client Secret` **empty** — Dynamic Client Registration handles this automatically
-5. Click **Add**. Your browser is redirected to `https://mcp.yourdomain.tld/oauth/consent?pending=...`
-6. Enter your `MCP_OAUTH_ADMIN_SECRET` (generated by `scripts/install.sh` on fresh installs, or added manually via `echo "MCP_OAUTH_ADMIN_SECRET=$(openssl rand -hex 32)" >> /opt/mcp-brain/.env`) and click **Authorize**
-7. Connector becomes active across every Claude surface signed into the same account
+Full OAuth setup: [`docs/auth.md`](docs/auth.md).
 
-The consent page is shown once per initial setup; claude.ai silently refreshes access tokens in the background after that. Full scope grammar and the dual-auth model are in [`docs/auth.md`](docs/auth.md#oauth-mode--claudeai-cloud-surfaces).
+---
 
-## Auth — multi-token with per-scope permissions
+## Auth — per-scope bearer tokens
 
-Edit `/opt/mcp-brain/data/auth.yaml`:
+Edit `/opt/mcp-brain/data/auth.yaml` (hot-reloads within 5 s):
 
 ```yaml
 tokens:
   - id: claude-code-laptop
     token: "tok_..."
-    scopes: ["*"]  # full access
+    scopes: ["*"]             # full access
 
   - id: cursor-school
     token: "tok_..."
@@ -105,7 +167,9 @@ tokens:
       - secrets_schema:homelab
 ```
 
-After editing: `cd /opt/mcp-brain && docker compose restart`. Full scope grammar reference: [`docs/auth.md`](docs/auth.md).
+Full scope grammar: [`docs/auth.md`](docs/auth.md).
+
+---
 
 ## Tools
 
@@ -113,8 +177,9 @@ After editing: `cd /opt/mcp-brain && docker compose restart`. Full scope grammar
 |------|---------------|
 | `knowledge_read` | `knowledge:read:<scope>` |
 | `knowledge_update` | `knowledge:write:<scope>` |
-| `knowledge_undo` | `knowledge:write:*` (full write) |
+| `knowledge_undo` | `knowledge:write:*` |
 | `knowledge_list` | filtered by `knowledge:read:*` |
+| `knowledge_map` | `knowledge:read:*` |
 | `inbox_list` | `inbox:read` |
 | `inbox_show` | `inbox:read` |
 | `inbox_add` | `inbox:write` |
@@ -122,59 +187,39 @@ After editing: `cd /opt/mcp-brain && docker compose restart`. Full scope grammar
 | `inbox_reject` | `inbox:write` |
 | `get_briefing` | filtered by `briefing:<scope>` |
 | `secrets_schema` | filtered by `secrets_schema:<scope>` |
+| `todoist_list` | `todoist:read` |
+| `todoist_add` | `todoist:write` |
+| `gcal_events` | `gcal:read` |
+| `gcal_add_event` | `gcal:write` |
+| `trello_cards` | `trello:read` |
+| `trello_add_card` | `trello:write` |
+| `nextcloud_browse` | `nextcloud:read` |
+| `brain_wake` | `wake:read` |
 
-## Write policy (optional, per-server instructions)
-
-If `knowledge/_meta/write-policy.md` exists, its contents are injected
-into the MCP `InitializeResult.instructions` field at startup and become
-part of every connected agent's system prompt for the session. This is
-the recommended place to put rules like "propose before writing",
-"announce saves in a footer", "never infer health facts from context",
-etc. — so that the same discipline applies on every device without
-copying a local config file around.
-
-- File is optional — if missing, mcp-brain starts with no custom
-  instructions.
-- The server reads it once at startup; restart the container after edits.
-- See [`docs/write-policy.example.md`](docs/write-policy.example.md) for
-  a ready-to-copy template.
-- Your actual policy lives in your (gitignored) knowledge store, not in
-  this repo — it's personal, not framework code.
-
-### `## Tool policy` — second channel for clients that ignore `instructions`
-
-Claude Code CLI honors `InitializeResult.instructions` faithfully.
-claude.ai web (via the OAuth Custom Connector flow) was observed to
-receive the same instructions, acknowledge them as "server system
-prompt", and still call `knowledge_update` without following the
-rules. Tool descriptions, on the other hand, are part of the schema
-every MCP client passes to the model verbatim, so rules embedded
-there cannot be silently dropped.
-
-If your `knowledge/_meta/write-policy.md` has a `## Tool policy` H2
-section, its body is extracted at startup and prepended to the
-`knowledge_update` tool's MCP description. This gives you a hard
-guardrail that reaches every client, not just those that honor
-per-server instructions. The section is optional — leave it out if
-you only use Claude Code CLI and `instructions` alone is enough.
-
-The example template in [`docs/write-policy.example.md`](docs/write-policy.example.md)
-includes a ready-to-copy `## Tool policy` block.
+---
 
 ## Architecture
 
 ```
-Client (Claude Code / Cursor / custom GPT / n8n)
-  │ HTTPS + Bearer token
+Claude Code / claude.ai / Cursor / ChatGPT / n8n
+  │ HTTPS + Bearer token (or OAuth 2.1)
   ▼
-Caddy (TLS termination, no auth)
+Caddy (TLS termination)
   │
   ▼
-mcp-brain (FastMCP, Streamable HTTP, multi-token bearer auth)
-  ├── /data/knowledge/          ← markdown KB, git-tracked, bind-mounted
-  ├── /data/auth.yaml           ← bearer tokens (read-only mount)
-  └── meta.yaml in knowledge/   ← user profile + secrets_schema
+mcp-brain  (FastMCP, Streamable HTTP)
+  ├── /mcp            ← MCP endpoint
+  ├── /healthz        ← Docker HEALTHCHECK
+  ├── /oauth/*        ← OAuth 2.1 authorization server
+  └── /admin/*        ← API key management (optional)
+
+Data (bind-mounted volumes):
+  ├── data/knowledge/   ← markdown KB, git-tracked
+  ├── data/auth.yaml    ← bearer tokens (hot-reloaded)
+  └── data/oauth-state.json
 ```
+
+---
 
 ## Development (local, without Docker)
 
@@ -182,40 +227,65 @@ mcp-brain (FastMCP, Streamable HTTP, multi-token bearer auth)
 git clone https://github.com/RyKaT07/mcp-brain.git
 cd mcp-brain
 python3.12 -m venv .venv && source .venv/bin/activate
-pip install -e .
-cp config/auth.yaml.example config/auth.yaml  # then edit tokens
+pip install -e ".[dev]"
+
+cp config/auth.yaml.example config/auth.yaml  # edit tokens
 cp knowledge/meta.yaml.example knowledge/meta.yaml
 
-# stdio mode bypasses auth — handy for local testing with the MCP CLI
+# stdio mode — auth bypassed, great for local testing
 MCP_TRANSPORT=stdio mcp-brain
 
-# or Streamable HTTP with auth (default)
+# Streamable HTTP with auth (default)
 MCP_AUTH_CONFIG=config/auth.yaml mcp-brain
+
+# Run tests
+pytest
 ```
 
-## Roadmap
+---
 
-Everything beyond MVP waits for separate PRs — see `CLAUDE.md` and `docs/`.
+## Write policy (optional)
 
-1. Todoist tool (read+write)
-2. Google Calendar tool
-3. Obsidian vault integration (Syncthing → `data/knowledge/`)
-4. Scrapers (university portal, Discord, IMAP) as LXC crons
-5. REST wrapper (FastAPI) alongside MCP for non-MCP clients
-6. Agent runner LXC (autonomous background tasks)
+If `knowledge/_meta/write-policy.md` exists, its contents are injected into the MCP `InitializeResult.instructions` and seen by every connected client. Use it to encode rules like "propose before writing" or "announce saves in a footer".
+
+An optional `## Tool policy` H2 in the same file is prepended to the `knowledge_update` tool description — a second channel that reaches clients that silently ignore `instructions` (observed with claude.ai web).
+
+Template: [`docs/write-policy.example.md`](docs/write-policy.example.md).
+
+---
+
+## Powered by BrainVlt
+
+Using mcp-brain in your project? Add the badge:
+
+```markdown
+[![Powered by BrainVlt](https://brainvlt.com/badge.svg)](https://brainvlt.com)
+```
+
+[![Powered by BrainVlt](https://brainvlt.com/badge.svg)](https://brainvlt.com)
+
+---
+
+## Update
+
+```bash
+sudo bash /opt/mcp-brain/scripts/install.sh update
+```
+
+Knowledge and tokens live in bind-mounted volumes — rollbacks are safe.
+
+---
 
 ## License
 
-Licensed under [PolyForm Noncommercial 1.0.0](LICENSE). In plain terms:
+Licensed under [PolyForm Noncommercial 1.0.0](LICENSE).
 
 - ✅ Personal use, hobby projects, research, education
 - ✅ Non-profits, educational institutions, government
-- ✅ Reading, studying, forking for your own non-commercial use
+- ✅ Reading, studying, forking for personal non-commercial use
 - ❌ Production use inside a for-profit company or commercial product
 - ❌ Bundling into a paid service without a commercial license
 
-If you or your company want to use mcp-brain commercially, open an issue
-and we can talk about a commercial license. See [CONTRIBUTING.md](CONTRIBUTING.md)
-for how pull requests are handled.
+Commercial licensing inquiries: open an issue. Contribution guidelines: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Use at your own risk — no warranty of any kind.

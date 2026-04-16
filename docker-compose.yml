@@ -35,6 +35,10 @@ services:
       # step; static yaml bearer tokens keep working for Claude Code CLI.
       MCP_OAUTH_STORE: /data/oauth-state.json
       MCP_OAUTH_ADMIN_SECRET: ${MCP_OAUTH_ADMIN_SECRET:?MCP_OAUTH_ADMIN_SECRET must be set in .env — generate via openssl rand -hex 32}
+      # Dynamic API key store and usage metering (multi-user support).
+      # Both files are created automatically on first run.
+      MCP_KEY_STORE: /data/keys.json
+      MCP_USAGE_STORE: /data/usage.json
       # Todoist integration (optional). If unset, Todoist tools are not
       # registered and the server starts normally without task management.
       TODOIST_API_KEY: ${TODOIST_API_KEY:-}

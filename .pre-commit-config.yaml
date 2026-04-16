@@ -1,0 +1,14 @@
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.16.0
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: pip-audit
+        name: pip-audit
+        entry: bash -c 'python3 -c "import tomllib, json; f=open(\"pyproject.toml\",\"rb\"); d=tomllib.load(f); deps=[r.split(\">\")[0].split(\"<\")[0].split(\"=\")[0].split(\"[\")[0].strip() for r in d[\"project\"][\"dependencies\"]]; installed={line.split(\"==\")[0].lower():line.split(\"==\")[1] for line in __import__(\"subprocess\").check_output([\"pip\",\"list\",\"--format=freeze\"],text=True).splitlines() if \"==\" in line}; lines=[f\"{pkg}=={installed[pkg.lower()]}\" for pkg in deps if pkg.lower() in installed]; open(\"/tmp/.pip-audit-reqs.txt\",\"w\").write(chr(10).join(lines))" && python3 -m pip_audit -r /tmp/.pip-audit-reqs.txt --no-deps --disable-pip'
+        language: system
+        stages: [pre-push]
+        pass_filenames: false

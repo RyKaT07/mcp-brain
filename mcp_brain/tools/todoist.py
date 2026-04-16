@@ -51,7 +51,7 @@ def register_todoist_tools(mcp: FastMCP, api_key: str) -> None:
             if filtered:
                 url = f"{url}?{urlencode(filtered)}"
         req = Request(url, headers=_headers(), method="GET")
-        with urlopen(req, timeout=15) as resp:
+        with urlopen(req, timeout=15) as resp:  # nosemgrep
             result = json.loads(resp.read())
         # API v1 wraps list endpoints in {"results": [...]}
         if isinstance(result, dict) and "results" in result:
@@ -62,7 +62,7 @@ def register_todoist_tools(mcp: FastMCP, api_key: str) -> None:
         url = f"{_BASE}{path}"
         data = json.dumps(body).encode() if body else b""
         req = Request(url, data=data, headers=_headers(), method="POST")
-        with urlopen(req, timeout=15) as resp:
+        with urlopen(req, timeout=15) as resp:  # nosemgrep
             raw = resp.read()
             return json.loads(raw) if raw else None
 

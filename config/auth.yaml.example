@@ -18,6 +18,7 @@
 # Resources and actions
 # ---------------------
 #
+#   wake:read                   brain_wake (entry-point tool; rate-limited to 1/10s)
 #   knowledge:read:<scope>      knowledge_read, knowledge_list (filtered)
 #   knowledge:write:<scope>     knowledge_update, inbox_accept (target side)
 #   inbox:read                  inbox_list
@@ -42,12 +43,15 @@ tokens:
     token: "tok_REPLACE_ME_with_openssl_rand_hex_32"
     description: "Personal laptop, full access"
     scopes: ["*"]
+    # user_id: null   # omit (or set null) for Patryk's root knowledge/ dir
+    # user_id: alice  # set to route knowledge to knowledge/users/alice/
 
   # School-only — Cursor session focused on coursework.
   - id: cursor-school
     token: "tok_REPLACE_ME_school"
     description: "School read+write, no work or homelab"
     scopes:
+      - wake:read
       - knowledge:read:school
       - knowledge:write:school
       - inbox:read
@@ -61,6 +65,7 @@ tokens:
     token: "tok_REPLACE_ME_n8n"
     description: "Homelab observability, read-only"
     scopes:
+      - wake:read
       - knowledge:read:homelab
       - briefing:homelab
       - secrets_schema:homelab

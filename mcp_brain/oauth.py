@@ -1,27 +1,25 @@
 """
-OAuth 2.1 authorization server for claude.ai Custom Connectors.
+OAuth 2.1 authorization server for MCP client integrations.
 
 mcp-brain runs TWO auth modes simultaneously:
 
 - **yaml bearer tokens** (`YamlTokenVerifier`, `config/auth.yaml`) — for
-  Claude Code CLI which lets the user paste any `Authorization` header
-  into `~/.claude.json`. Tokens are configured by hand and never
-  rotate automatically.
-- **OAuth-issued tokens** (this module) — for claude.ai web + iOS +
-  Android + desktop chat "Custom Connectors", whose dialog only
-  supports OAuth 2.0. Every claude.ai device runs through DCR +
-  authorization_code + PKCE to get a `tok_oauth_*` bearer on our
-  server, and refreshes via `refresh_token` exchange until revoked.
+  local MCP clients (Claude Code CLI, Gemini CLI, Cursor, etc.) that
+  let the user inject a custom ``Authorization`` header directly into
+  the client config.  Tokens are configured by hand and never rotate
+  automatically.
+- **OAuth-issued tokens** (this module) — for cloud MCP surfaces
+  (claude.ai, ChatGPT, Google AI Studio, Gemini for Workspace, …) whose
+  connector dialogs only support OAuth 2.0 and cannot accept a static
+  header.  Every cloud client runs through DCR + authorization_code +
+  PKCE to get a ``tok_oauth_*`` bearer on our server and refreshes via
+  ``refresh_token`` exchange until revoked.
 
-Both live behind a single `ChainedProvider.load_access_token()` which
+Both live behind a single ``ChainedProvider.load_access_token()`` which
 first checks the OAuth store on disk, then falls back to the yaml
-verifier. Tools see no difference — both paths land in
-`BearerAuthBackend`'s `AuthenticatedUser.scopes` and flow through
-`_perms.require()` the same way.
-
-This Phase 1 scaffold implements `load_access_token` fully (the bearer
-validation chain) and leaves the DCR/authorize/token/refresh methods
-raising `NotImplementedError`. Phase 2 fills them in.
+verifier.  Tools see no difference — both paths land in
+``BearerAuthBackend``'s ``AuthenticatedUser.scopes`` and flow through
+``_perms.require()`` the same way.
 """
 
 from __future__ import annotations
@@ -54,6 +52,7 @@ from mcp_brain.auth import YamlTokenVerifier
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
+    from mcp_brain.keystore import KeyStore
 
 logger = logging.getLogger("mcp_brain.oauth")
 
@@ -336,15 +335,18 @@ class ChainedProvider(
     tokens and legacy yaml bearer tokens through a single interface.
 
     FastMCP wires this into BearerAuthBackend via ProviderTokenVerifier,
-    which calls `load_access_token(token)` for every incoming bearer.
-    Our implementation checks the OAuth store first, then falls back
-    to the wrapped YamlTokenVerifier — so the laptop CLI bearer flow
-    is untouched, while claude.ai Custom Connector gets its own
-    dynamically-issued tokens.
+    which calls ``load_access_token(token)`` for every incoming bearer.
+    Our implementation checks three sources in order:
 
-    Phase 1 implements only `load_access_token` (the chain). The
-    rest of the provider methods raise NotImplementedError until
-    Phase 2 fills them in along with the consent page.
+    1. OAuth-issued tokens (cloud MCP clients — claude.ai, ChatGPT,
+       Google AI Studio, etc. — via ``/token``).
+    2. YAML bearer tokens (static ``config/auth.yaml``, local CLI
+       clients such as Claude Code, Gemini CLI, Cursor).
+    3. Dynamic keystore tokens (generated via ``apikeys_create`` tool).
+
+    Tools see no difference — all three paths produce an ``AccessToken``
+    with the same structure, and ``_perms.require()`` enforces scopes
+    identically for all sources.
     """
 
     def __init__(
@@ -354,6 +356,7 @@ class ChainedProvider(
         admin_secret: str,
         public_url: str,
         access_token_ttl_s: int = ACCESS_TOKEN_TTL_S,
+        key_store: "KeyStore | None" = None,
     ):
         self.store = OAuthStore(store_path)
         self.yaml_verifier = yaml_verifier
@@ -362,19 +365,23 @@ class ChainedProvider(
         self.access_token_ttl_s = access_token_ttl_s
         self.pending = PendingConsentStore()
         self.auth_codes = AuthorizationCodeStore()
+        self.key_store = key_store  # dynamic API key store (may be None)
 
     # ------------------------------------------------------------------ the chain
 
     async def load_access_token(self, token: str) -> AccessToken | None:
-        """Bearer validation for BOTH auth modes.
+        """Bearer validation for all three auth modes.
 
         1. OAuth-issued tokens live in `self.store.access_tokens`.
            If we find one that hasn't expired, return it.
         2. Otherwise delegate to the yaml verifier — the existing
            laptop-CLI bearer path.
-        3. Neither matches → return None → FastMCP's BearerAuthBackend
-           returns 401.
+        3. Check the dynamic keystore for API keys generated via
+           `apikeys_create`. Uses key UUID as client_id so
+           `_perms.get_current_user_id()` can map it back to user_id.
+        4. None of the above matches → return None → 401.
         """
+        # 1. OAuth-issued tokens
         oauth_rec = self.store.get_access_token(token)
         if oauth_rec is not None:
             return AccessToken(
@@ -384,7 +391,20 @@ class ChainedProvider(
                 expires_at=oauth_rec.expires_at,
                 resource=oauth_rec.resource,
             )
-        return await self.yaml_verifier.verify_token(token)
+        # 2. YAML bearer tokens
+        yaml_tok = await self.yaml_verifier.verify_token(token)
+        if yaml_tok is not None:
+            return yaml_tok
+        # 3. Dynamic keystore tokens
+        if self.key_store is not None:
+            key_entry = self.key_store.by_token(token)
+            if key_entry is not None:
+                return AccessToken(
+                    token=key_entry.token,
+                    client_id=key_entry.id,  # UUID — looked up by _perms.get_current_user_id
+                    scopes=list(key_entry.scopes),
+                )
+        return None
 
     # ------------------------------------------------------------------ DCR
 
@@ -399,10 +419,10 @@ class ChainedProvider(
     ) -> None:
         """Store a freshly-registered client (called from the DCR handler).
 
-        We **force** `client_info.scope = "*"` before storing so that
-        `OAuthClientMetadata.validate_scope()` passes during the later
-        /authorize call regardless of what scope claude.ai requests.
-        Real authorization happens at tool level via `_perms.require()`,
+        We **force** ``client_info.scope = "*"`` before storing so that
+        ``OAuthClientMetadata.validate_scope()`` passes during the later
+        ``/authorize`` call regardless of what scope the client requests.
+        Real authorization happens at tool level via ``_perms.require()``,
         not at the OAuth scope layer, so we treat the OAuth scope field
         as "this client is allowed to request anything; the final
         enforcement is elsewhere".
@@ -786,10 +806,10 @@ def _render_consent_html(
 ) -> str:
     """Render the single-page HTML consent form.
 
-    Inline CSS, no external assets, no JavaScript. Shown once per
-    device at initial Custom Connector setup; after that, claude.ai
-    holds a refresh token and the user doesn't see this page unless
-    they explicitly re-authorize.
+    Inline CSS, no external assets, no JavaScript.  Shown once per
+    device at initial MCP connector setup; after that, the client holds
+    a refresh token and silently re-authorizes — the user does not see
+    this page again unless they explicitly revoke and re-connect.
     """
     scope_str = " ".join(scopes) if scopes else "*"
     error_block = (
@@ -833,11 +853,11 @@ def register_oauth_consent_route(
 ) -> None:
     """Register GET + POST /oauth/consent on the FastMCP instance.
 
-    The consent page is NOT protected by bearer auth — claude.ai can't
-    attach one, and that's the whole point of the page. Security comes
-    from the admin_secret field in the POSTed form, which must match
-    `MCP_OAUTH_ADMIN_SECRET` (checked with `hmac.compare_digest` for
-    constant-time comparison).
+    The consent page is NOT protected by bearer auth — OAuth clients
+    cannot attach one at this stage of the flow, and that is the whole
+    point of the page.  Security comes from the admin_secret field in
+    the POSTed form, which must match ``MCP_OAUTH_ADMIN_SECRET``
+    (checked with ``hmac.compare_digest`` for constant-time comparison).
 
     If the server starts without an admin secret configured, GET and
     POST both return 503 with a clear explanation.
