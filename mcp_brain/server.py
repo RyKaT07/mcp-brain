@@ -32,6 +32,7 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.admin import build_admin_routes
 from mcp_brain.auth import YamlTokenVerifier
+from mcp_brain.integration_store import IntegrationStore
 from mcp_brain.logging_middleware import MCPLoggingMiddleware
 from mcp_brain.keystore import KeyStore
 from mcp_brain.oauth import ChainedProvider, register_oauth_consent_route
@@ -49,8 +50,10 @@ from mcp_brain.tools.trello import register_trello_tools
 from mcp_brain.tools.maintain import register_maintain_tools
 from mcp_brain.tools.meta import register_meta_tools
 from mcp_brain.tools.search import register_search_tools
+from mcp_brain.tools.graph import register_graph_tools
 from mcp_brain.tools.wake import register_wake_tools
 from mcp_brain.search import SearchIndex
+from mcp_brain.graph import RelationshipGraph
 
 KNOWLEDGE_DIR = Path(os.getenv("MCP_KNOWLEDGE_DIR", "./knowledge"))
 AUTH_CONFIG_PATH = Path(os.getenv("MCP_AUTH_CONFIG", "./config/auth.yaml"))
@@ -67,6 +70,7 @@ if _AUTH_YAML_INLINE:
 OAUTH_STORE_PATH = Path(os.getenv("MCP_OAUTH_STORE", "./data/oauth-state.json"))
 KEY_STORE_PATH = Path(os.getenv("MCP_KEY_STORE", "./data/keys.json"))
 USAGE_STORE_PATH = Path(os.getenv("MCP_USAGE_STORE", "./data/usage.json"))
+INTEGRATION_STORE_PATH = Path(os.getenv("MCP_INTEGRATION_STORE", "./data/integrations.json"))
 OAUTH_ADMIN_SECRET = os.getenv("MCP_OAUTH_ADMIN_SECRET", "")
 ADMIN_SECRET = os.getenv("MCP_ADMIN_SECRET", "")
 HOST = os.getenv("MCP_HOST", "0.0.0.0")
@@ -199,10 +203,11 @@ def _load_briefing_trigger(knowledge_dir: Path) -> str:
     return _extract_h2_section(content, "Read discipline — don't over-fetch")
 
 
-# Module-level key store and usage meter so both _build_mcp() and
-# _build_app() can share the same instances without threading issues.
+# Module-level stores so both _build_mcp() and _build_app() share the same
+# instances without threading issues.
 key_store = KeyStore(KEY_STORE_PATH)
 usage_meter = UsageMeter(USAGE_STORE_PATH)
+integration_store = IntegrationStore(INTEGRATION_STORE_PATH)
 
 
 def _build_mcp() -> FastMCP:
@@ -289,22 +294,68 @@ def _build_mcp() -> FastMCP:
     search_index = SearchIndex()
     search_index.build(KNOWLEDGE_DIR)
 
-    register_knowledge_tools(mcp, KNOWLEDGE_DIR, tool_policy=tool_policy, search_index=search_index)
+    rel_graph = RelationshipGraph()
+    rel_graph.build(KNOWLEDGE_DIR)
+
+    register_knowledge_tools(mcp, KNOWLEDGE_DIR, tool_policy=tool_policy, search_index=search_index, rel_graph=rel_graph)
     register_maintain_tools(mcp, KNOWLEDGE_DIR)
     register_meta_tools(mcp, KNOWLEDGE_DIR)
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
     register_briefing_tools(mcp, KNOWLEDGE_DIR, briefing_trigger=briefing_trigger)
     register_secrets_tools(mcp, KNOWLEDGE_DIR)
     register_apikeys_tools(mcp, key_store, usage_meter)
-    if TODOIST_API_KEY:
-        register_todoist_tools(mcp, TODOIST_API_KEY)
-    if NEXTCLOUD_URL and NEXTCLOUD_USER and NEXTCLOUD_PASSWORD:
-        register_nextcloud_tools(mcp, NEXTCLOUD_URL, NEXTCLOUD_USER, NEXTCLOUD_PASSWORD)
-    if TRELLO_API_KEY and TRELLO_API_TOKEN:
-        register_trello_tools(mcp, TRELLO_API_KEY, TRELLO_API_TOKEN)
-    if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REFRESH_TOKEN:
-        register_gcal_tools(mcp, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN)
+
+    def _get_integration_creds(name: str) -> dict[str, str] | None:
+        """Check IntegrationStore first, fall back to env vars."""
+        stored = integration_store.get(name)
+        if stored:
+            return stored
+        env_map: dict[str, dict[str, str]] = {
+            "todoist": {"TODOIST_API_KEY": TODOIST_API_KEY},
+            "trello": {"TRELLO_API_KEY": TRELLO_API_KEY, "TRELLO_API_TOKEN": TRELLO_API_TOKEN},
+            "nextcloud": {
+                "NEXTCLOUD_URL": NEXTCLOUD_URL,
+                "NEXTCLOUD_USER": NEXTCLOUD_USER,
+                "NEXTCLOUD_PASSWORD": NEXTCLOUD_PASSWORD,
+            },
+            "gcal": {
+                "GOOGLE_CLIENT_ID": GOOGLE_CLIENT_ID,
+                "GOOGLE_CLIENT_SECRET": GOOGLE_CLIENT_SECRET,
+                "GOOGLE_REFRESH_TOKEN": GOOGLE_REFRESH_TOKEN,
+            },
+        }
+        creds = env_map.get(name, {})
+        if all(v for v in creds.values()):
+            return creds
+        return None
+
+    todoist_creds = _get_integration_creds("todoist")
+    if todoist_creds:
+        register_todoist_tools(mcp, todoist_creds["TODOIST_API_KEY"])
+
+    nextcloud_creds = _get_integration_creds("nextcloud")
+    if nextcloud_creds:
+        register_nextcloud_tools(
+            mcp,
+            nextcloud_creds["NEXTCLOUD_URL"],
+            nextcloud_creds["NEXTCLOUD_USER"],
+            nextcloud_creds["NEXTCLOUD_PASSWORD"],
+        )
+
+    trello_creds = _get_integration_creds("trello")
+    if trello_creds:
+        register_trello_tools(mcp, trello_creds["TRELLO_API_KEY"], trello_creds["TRELLO_API_TOKEN"])
+
+    gcal_creds = _get_integration_creds("gcal")
+    if gcal_creds:
+        register_gcal_tools(
+            mcp,
+            gcal_creds["GOOGLE_CLIENT_ID"],
+            gcal_creds["GOOGLE_CLIENT_SECRET"],
+            gcal_creds["GOOGLE_REFRESH_TOKEN"],
+        )
     register_search_tools(mcp, KNOWLEDGE_DIR, search_index)
+    register_graph_tools(mcp, KNOWLEDGE_DIR, rel_graph)
     # brain_wake must be registered LAST so its tool inventory snapshot
     # captures every tool registered above (including conditional ones).
     register_wake_tools(mcp, KNOWLEDGE_DIR, briefing_trigger=briefing_trigger)
@@ -344,7 +395,29 @@ def _build_app():
         async with mcp.session_manager.run():
             yield
 
-    admin_routes = build_admin_routes(key_store, ADMIN_SECRET) if ADMIN_SECRET else []
+    import logging as _logging
+    _logger = _logging.getLogger("mcp_brain")
+
+    def _on_integration_change(name: str, credentials: dict[str, str] | None) -> None:
+        # Full hot-reload (re-registering tools on a running MCP server) requires
+        # FastMCP API support for removing/replacing tools. Until that is available,
+        # log the change and document that a container restart is needed to activate
+        # the new credentials.
+        if credentials:
+            _logger.info("Integration '%s' configured — restart to activate", name)
+        else:
+            _logger.info("Integration '%s' removed — restart to deactivate", name)
+
+    admin_routes = (
+        build_admin_routes(
+            key_store,
+            ADMIN_SECRET,
+            integration_store=integration_store,
+            on_integration_change=_on_integration_change,
+        )
+        if ADMIN_SECRET
+        else []
+    )
 
     outer = Starlette(
         debug=inner.debug,
