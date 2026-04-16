@@ -1,7 +1,8 @@
 """Full-text search index backed by SQLite FTS5 (in-memory).
 
-Indexes knowledge markdown files split by H2 sections, allowing BM25-ranked
-queries scoped to allowed knowledge scopes.
+Indexes knowledge markdown files split by H2 sections, plus Todoist tasks
+and Trello cards when API keys are available. Allows BM25-ranked queries
+scoped to allowed knowledge scopes, with optional source filtering.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ def _parse_sections(content: str) -> dict[str, str]:
 
 
 class SearchIndex:
-    """In-memory SQLite FTS5 index over knowledge markdown files."""
+    """In-memory SQLite FTS5 index over knowledge markdown files and tasks."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -44,24 +45,73 @@ class SearchIndex:
         self._conn.execute(
             """
             CREATE VIRTUAL TABLE knowledge_fts USING fts5(
-                scope, project, section, content,
+                scope, project, section, content, source,
                 tokenize = "porter unicode61"
             )
             """
         )
         self._conn.commit()
 
+        # Per-user indexes: user_id → SearchIndex (leaf instances, not recursive).
+        # Created lazily on first write or explicit build_user() call.
+        self._user_indexes: dict[str, "SearchIndex"] = {}
+        self._user_indexes_lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # Per-user index management
+    # ------------------------------------------------------------------
+
+    def _get_or_create_user_index(self, user_id: str) -> "SearchIndex":
+        """Return the per-user SearchIndex, creating an empty one if needed."""
+        with self._user_indexes_lock:
+            if user_id not in self._user_indexes:
+                self._user_indexes[user_id] = SearchIndex()
+            return self._user_indexes[user_id]
+
+    def has_user_index(self, user_id: str) -> bool:
+        """Return True if a per-user index has been created for *user_id*."""
+        with self._user_indexes_lock:
+            return user_id in self._user_indexes
+
+    def get_user_index(self, user_id: str) -> "SearchIndex | None":
+        """Return the per-user SearchIndex or None if it doesn't exist yet."""
+        with self._user_indexes_lock:
+            return self._user_indexes.get(user_id)
+
+    def build_user(self, user_id: str, user_dir: Path) -> None:
+        """(Re)build the per-user search index from *user_dir*."""
+        idx = self._get_or_create_user_index(user_id)
+        idx.build(user_dir)
+
+    def update_file_for_user(
+        self, user_id: str, scope: str, project: str, content: str
+    ) -> None:
+        """Re-index a single file in the per-user index."""
+        idx = self._get_or_create_user_index(user_id)
+        idx.update_file(scope, project, content)
+
+    def remove_file_for_user(self, user_id: str, scope: str, project: str) -> None:
+        """Remove a file from the per-user index."""
+        with self._user_indexes_lock:
+            idx = self._user_indexes.get(user_id)
+        if idx is not None:
+            idx.remove_file(scope, project)
+
     # ------------------------------------------------------------------
     # Build / refresh
     # ------------------------------------------------------------------
 
     def build(self, knowledge_dir: Path) -> None:
-        """Scan all knowledge/{scope}/{project}.md files and index them."""
+        """Scan all knowledge/{scope}/{project}.md files and index them.
+
+        Only clears and re-indexes knowledge entries; task entries
+        (source=todoist/trello) are preserved across rebuilds.
+        """
         t0 = time.monotonic()
         file_count = 0
         section_count = 0
 
-        rows: list[tuple[str, str, str, str]] = []
+        rows: list[tuple[str, str, str, str, str]] = []
 
         for scope_dir in knowledge_dir.iterdir():
             if not scope_dir.is_dir():
@@ -83,16 +133,16 @@ class SearchIndex:
                     combined = f"{section_title}\n{section_body}".strip()
                     if not combined:
                         continue
-                    rows.append((scope, project, section_title, combined))
+                    rows.append((scope, project, section_title, combined, "knowledge"))
                     section_count += 1
 
                 file_count += 1
 
         with self._lock:
-            self._conn.execute("DELETE FROM knowledge_fts")
+            self._conn.execute("DELETE FROM knowledge_fts WHERE source = 'knowledge'")
             if rows:
                 self._conn.executemany(
-                    "INSERT INTO knowledge_fts(scope, project, section, content) VALUES (?, ?, ?, ?)",
+                    "INSERT INTO knowledge_fts(scope, project, section, content, source) VALUES (?, ?, ?, ?, ?)",
                     rows,
                 )
             self._conn.commit()
@@ -106,35 +156,164 @@ class SearchIndex:
         )
 
     def update_file(self, scope: str, project: str, content: str) -> None:
-        """Re-index a single file (delete old rows, insert fresh ones)."""
+        """Re-index a single knowledge file (delete old rows, insert fresh ones)."""
         sections = _parse_sections(content)
-        rows: list[tuple[str, str, str, str]] = []
+        rows: list[tuple[str, str, str, str, str]] = []
         for section_title, section_body in sections.items():
             combined = f"{section_title}\n{section_body}".strip()
             if not combined:
                 continue
-            rows.append((scope, project, section_title, combined))
+            rows.append((scope, project, section_title, combined, "knowledge"))
 
         with self._lock:
             self._conn.execute(
-                "DELETE FROM knowledge_fts WHERE scope = ? AND project = ?",
+                "DELETE FROM knowledge_fts WHERE scope = ? AND project = ? AND source = 'knowledge'",
                 (scope, project),
             )
             if rows:
                 self._conn.executemany(
-                    "INSERT INTO knowledge_fts(scope, project, section, content) VALUES (?, ?, ?, ?)",
+                    "INSERT INTO knowledge_fts(scope, project, section, content, source) VALUES (?, ?, ?, ?, ?)",
                     rows,
                 )
             self._conn.commit()
 
     def remove_file(self, scope: str, project: str) -> None:
-        """Remove all index rows for a scope/project."""
+        """Remove all knowledge index rows for a scope/project."""
         with self._lock:
             self._conn.execute(
-                "DELETE FROM knowledge_fts WHERE scope = ? AND project = ?",
+                "DELETE FROM knowledge_fts WHERE scope = ? AND project = ? AND source = 'knowledge'",
                 (scope, project),
             )
             self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Task indexing
+    # ------------------------------------------------------------------
+
+    def index_todoist_tasks(self, tasks: list[dict], scope: str = "user") -> int:
+        """Index Todoist tasks into FTS. Returns count indexed.
+
+        Each task dict must have:
+          - content: task title string
+          - project_name: Todoist project name (used as FTS project column)
+          - section_name: Todoist section name (used as FTS section column, may be empty)
+        """
+        rows: list[tuple[str, str, str, str, str]] = []
+        for t in tasks:
+            content = t.get("content", "").strip()
+            if not content:
+                continue
+            project = t.get("project_name", "Inbox")
+            section = t.get("section_name", "") or ""
+            rows.append((scope, project, section, content, "todoist"))
+
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM knowledge_fts WHERE source = 'todoist' AND scope = ?",
+                (scope,),
+            )
+            if rows:
+                self._conn.executemany(
+                    "INSERT INTO knowledge_fts(scope, project, section, content, source) VALUES (?, ?, ?, ?, ?)",
+                    rows,
+                )
+            self._conn.commit()
+
+        logger.info(
+            "search.index_todoist_tasks: indexed %d tasks for scope=%s",
+            len(rows),
+            scope,
+        )
+        return len(rows)
+
+    def index_trello_cards(self, cards: list[dict], scope: str = "user") -> int:
+        """Index Trello cards into FTS. Returns count indexed.
+
+        Each card dict must have:
+          - name: card title string
+          - board_name: Trello board name (used as FTS project column)
+          - list_name: Trello list name (used as FTS section column)
+        """
+        rows: list[tuple[str, str, str, str, str]] = []
+        for c in cards:
+            name = c.get("name", "").strip()
+            if not name:
+                continue
+            board_name = c.get("board_name", "")
+            list_name = c.get("list_name", "")
+            rows.append((scope, board_name, list_name, name, "trello"))
+
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM knowledge_fts WHERE source = 'trello' AND scope = ?",
+                (scope,),
+            )
+            if rows:
+                self._conn.executemany(
+                    "INSERT INTO knowledge_fts(scope, project, section, content, source) VALUES (?, ?, ?, ?, ?)",
+                    rows,
+                )
+            self._conn.commit()
+
+        logger.info(
+            "search.index_trello_cards: indexed %d cards for scope=%s",
+            len(rows),
+            scope,
+        )
+        return len(rows)
+
+    def refresh_tasks(
+        self,
+        todoist_tasks: list[dict] | None = None,
+        trello_cards: list[dict] | None = None,
+        scope: str = "user",
+    ) -> None:
+        """Atomically clear task entries for scope and optionally re-index.
+
+        Clears all todoist and trello entries for the given scope in one
+        transaction before inserting fresh data.
+        """
+        todoist_rows: list[tuple[str, str, str, str, str]] = []
+        if todoist_tasks is not None:
+            for t in todoist_tasks:
+                content = t.get("content", "").strip()
+                if content:
+                    todoist_rows.append(
+                        (scope, t.get("project_name", "Inbox"), t.get("section_name", "") or "", content, "todoist")
+                    )
+
+        trello_rows: list[tuple[str, str, str, str, str]] = []
+        if trello_cards is not None:
+            for c in trello_cards:
+                name = c.get("name", "").strip()
+                if name:
+                    trello_rows.append(
+                        (scope, c.get("board_name", ""), c.get("list_name", ""), name, "trello")
+                    )
+
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM knowledge_fts WHERE source IN ('todoist', 'trello') AND scope = ?",
+                (scope,),
+            )
+            if todoist_rows:
+                self._conn.executemany(
+                    "INSERT INTO knowledge_fts(scope, project, section, content, source) VALUES (?, ?, ?, ?, ?)",
+                    todoist_rows,
+                )
+            if trello_rows:
+                self._conn.executemany(
+                    "INSERT INTO knowledge_fts(scope, project, section, content, source) VALUES (?, ?, ?, ?, ?)",
+                    trello_rows,
+                )
+            self._conn.commit()
+
+        logger.info(
+            "search.refresh_tasks: refreshed %d todoist + %d trello entries for scope=%s",
+            len(todoist_rows),
+            len(trello_rows),
+            scope,
+        )
 
     # ------------------------------------------------------------------
     # Search
@@ -145,44 +324,49 @@ class SearchIndex:
         query: str,
         allowed_scopes: list[str] | None,
         limit: int = 10,
+        source: str | None = None,
     ) -> list[dict]:
         """Run a BM25-ranked FTS5 query and return results.
 
-        Returns a list of dicts: {scope, project, section, snippet, rank}.
+        Returns a list of dicts: {scope, project, section, snippet, rank, source}.
+
+        Args:
+            query: Full-text search query string.
+            allowed_scopes: If set, restrict results to these scopes. None = all.
+            limit: Maximum results to return.
+            source: If set, restrict results to this source ("knowledge",
+                    "todoist", or "trello"). None = all sources.
         """
         if not query or not query.strip():
             return []
 
+        conditions: list[str] = ["knowledge_fts MATCH ?"]
+        params: list = [query]
+
         if allowed_scopes is not None:
             placeholders = ",".join("?" * len(allowed_scopes))
-            sql = f"""
-                SELECT
-                    scope,
-                    project,
-                    section,
-                    snippet(knowledge_fts, 3, '<b>', '</b>', '…', 16) AS snippet,
-                    bm25(knowledge_fts) AS rank
-                FROM knowledge_fts
-                WHERE knowledge_fts MATCH ?
-                  AND scope IN ({placeholders})
-                ORDER BY rank
-                LIMIT ?
-            """
-            params: list = [query, *allowed_scopes, limit]
-        else:
-            sql = """
-                SELECT
-                    scope,
-                    project,
-                    section,
-                    snippet(knowledge_fts, 3, '<b>', '</b>', '…', 16) AS snippet,
-                    bm25(knowledge_fts) AS rank
-                FROM knowledge_fts
-                WHERE knowledge_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?
-            """
-            params = [query, limit]
+            conditions.append(f"scope IN ({placeholders})")
+            params.extend(allowed_scopes)
+
+        if source is not None:
+            conditions.append("source = ?")
+            params.append(source)
+
+        where = " AND ".join(conditions)
+        sql = f"""
+            SELECT
+                scope,
+                project,
+                section,
+                snippet(knowledge_fts, 3, '<b>', '</b>', '…', 16) AS snippet,
+                bm25(knowledge_fts) AS rank,
+                source
+            FROM knowledge_fts
+            WHERE {where}
+            ORDER BY rank
+            LIMIT ?
+        """
+        params.append(limit)
 
         with self._lock:
             try:
@@ -199,6 +383,7 @@ class SearchIndex:
                 "section": row[2],
                 "snippet": row[3],
                 "rank": row[4],
+                "source": row[5],
             }
             for row in rows
         ]

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+import subprocess
 import threading
 import time
 from collections import deque
@@ -189,6 +190,11 @@ class RelationshipGraph:
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
 
+        # Per-user graphs: user_id → RelationshipGraph (leaf instances, not recursive).
+        # Created lazily on first write or explicit build_user() call.
+        self._user_graphs: dict[str, "RelationshipGraph"] = {}
+        self._user_graphs_lock = threading.Lock()
+
     def _init_schema(self) -> None:
         self._conn.executescript(
             """
@@ -210,12 +216,16 @@ class RelationshipGraph:
                 source_project TEXT NOT NULL DEFAULT '',
                 source_section TEXT NOT NULL DEFAULT '',
                 confidence     REAL NOT NULL DEFAULT 1.0,
+                valid_from     TEXT DEFAULT NULL,
+                valid_to       TEXT DEFAULT NULL,
+                observed_at    TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE (subject_id, predicate, object_id, source_scope, source_project)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_rel_subject ON relationships(subject_id);
-            CREATE INDEX IF NOT EXISTS idx_rel_object  ON relationships(object_id);
-            CREATE INDEX IF NOT EXISTS idx_rel_pred    ON relationships(predicate);
+            CREATE INDEX IF NOT EXISTS idx_rel_subject  ON relationships(subject_id);
+            CREATE INDEX IF NOT EXISTS idx_rel_object   ON relationships(object_id);
+            CREATE INDEX IF NOT EXISTS idx_rel_pred     ON relationships(predicate);
+            CREATE INDEX IF NOT EXISTS idx_rel_temporal ON relationships(valid_from, valid_to);
             """
         )
         self._conn.commit()
@@ -245,7 +255,9 @@ class RelationshipGraph:
         )
         return cur.fetchone()[0]
 
-    def _index_file(self, scope: str, project: str, content: str) -> None:
+    def _index_file(
+        self, scope: str, project: str, content: str, observed_at: str | None = None
+    ) -> None:
         """Extract and insert entities/relationships for one file (lock must be held)."""
         entities, relationships = _extract_entities_and_rels(scope, project, content)
 
@@ -272,37 +284,121 @@ class RelationshipGraph:
                 eid = self._upsert_entity(obj, "concept", "", "")
                 entity_ids[obj] = eid
 
-            self._conn.execute(
-                """
-                INSERT INTO relationships
-                    (subject_id, predicate, object_id, source_scope, source_project,
-                     source_section, confidence)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(subject_id, predicate, object_id, source_scope, source_project)
-                DO UPDATE SET confidence = excluded.confidence,
-                              source_section = excluded.source_section
-                """,
-                (
-                    entity_ids[subj],
-                    rel["predicate"],
-                    entity_ids[obj],
-                    rel["source_scope"],
-                    rel["source_project"],
-                    rel["source_section"],
-                    rel["confidence"],
-                ),
-            )
+            if observed_at is not None:
+                self._conn.execute(
+                    """
+                    INSERT INTO relationships
+                        (subject_id, predicate, object_id, source_scope, source_project,
+                         source_section, confidence, observed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(subject_id, predicate, object_id, source_scope, source_project)
+                    DO UPDATE SET confidence = excluded.confidence,
+                                  source_section = excluded.source_section
+                    """,
+                    (
+                        entity_ids[subj],
+                        rel["predicate"],
+                        entity_ids[obj],
+                        rel["source_scope"],
+                        rel["source_project"],
+                        rel["source_section"],
+                        rel["confidence"],
+                        observed_at,
+                    ),
+                )
+            else:
+                self._conn.execute(
+                    """
+                    INSERT INTO relationships
+                        (subject_id, predicate, object_id, source_scope, source_project,
+                         source_section, confidence)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(subject_id, predicate, object_id, source_scope, source_project)
+                    DO UPDATE SET confidence = excluded.confidence,
+                                  source_section = excluded.source_section
+                    """,
+                    (
+                        entity_ids[subj],
+                        rel["predicate"],
+                        entity_ids[obj],
+                        rel["source_scope"],
+                        rel["source_project"],
+                        rel["source_section"],
+                        rel["confidence"],
+                    ),
+                )
+
+    # ------------------------------------------------------------------
+    # Per-user graph management
+    # ------------------------------------------------------------------
+
+    def _get_or_create_user_graph(self, user_id: str) -> "RelationshipGraph":
+        """Return the per-user RelationshipGraph, creating an empty one if needed."""
+        with self._user_graphs_lock:
+            if user_id not in self._user_graphs:
+                self._user_graphs[user_id] = RelationshipGraph()
+            return self._user_graphs[user_id]
+
+    def has_user_graph(self, user_id: str) -> bool:
+        """Return True if a per-user graph has been created for *user_id*."""
+        with self._user_graphs_lock:
+            return user_id in self._user_graphs
+
+    def get_user_graph(self, user_id: str) -> "RelationshipGraph | None":
+        """Return the per-user RelationshipGraph or None if it doesn't exist yet."""
+        with self._user_graphs_lock:
+            return self._user_graphs.get(user_id)
+
+    def build_user(self, user_id: str, user_dir: Path) -> None:
+        """(Re)build the per-user graph from *user_dir*."""
+        graph = self._get_or_create_user_graph(user_id)
+        graph.build(user_dir)
+
+    def update_file_for_user(
+        self,
+        user_id: str,
+        scope: str,
+        project: str,
+        content: str,
+        observed_at: str | None = None,
+    ) -> None:
+        """Re-index a single file in the per-user graph."""
+        graph = self._get_or_create_user_graph(user_id)
+        graph.update_file(scope, project, content, observed_at=observed_at)
+
+    def remove_file_for_user(self, user_id: str, scope: str, project: str) -> None:
+        """Remove a file from the per-user graph."""
+        with self._user_graphs_lock:
+            graph = self._user_graphs.get(user_id)
+        if graph is not None:
+            graph.remove_file(scope, project)
 
     # ------------------------------------------------------------------
     # Build / refresh
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _git_file_timestamp(knowledge_dir: Path, md_file: Path) -> str | None:
+        """Return the ISO 8601 last-commit timestamp for a file, or None."""
+        try:
+            result = subprocess.run(
+                ["git", "log", "-1", "--format=%aI", "--", str(md_file)],
+                cwd=knowledge_dir,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            ts = result.stdout.strip()
+            return ts if ts else None
+        except Exception:
+            return None
 
     def build(self, knowledge_dir: Path) -> None:
         """Scan all knowledge/{scope}/{project}.md files and build the graph."""
         t0 = time.monotonic()
         file_count = 0
 
-        file_data: list[tuple[str, str, str]] = []
+        file_data: list[tuple[str, str, str, str | None]] = []
 
         for scope_dir in knowledge_dir.iterdir():
             if not scope_dir.is_dir():
@@ -318,14 +414,15 @@ class RelationshipGraph:
                 except Exception:
                     logger.warning("graph.build: could not read %s", md_file)
                     continue
-                file_data.append((scope, project, content))
+                observed_at = self._git_file_timestamp(knowledge_dir, md_file)
+                file_data.append((scope, project, content, observed_at))
                 file_count += 1
 
         with self._lock:
             self._conn.execute("DELETE FROM relationships")
             self._conn.execute("DELETE FROM entities")
-            for scope, project, content in file_data:
-                self._index_file(scope, project, content)
+            for scope, project, content, observed_at in file_data:
+                self._index_file(scope, project, content, observed_at=observed_at)
             self._conn.commit()
 
         elapsed = time.monotonic() - t0
@@ -335,7 +432,9 @@ class RelationshipGraph:
             elapsed,
         )
 
-    def update_file(self, scope: str, project: str, content: str) -> None:
+    def update_file(
+        self, scope: str, project: str, content: str, observed_at: str | None = None
+    ) -> None:
         """Re-index a single file (removes old relationships for that file, inserts fresh ones)."""
         with self._lock:
             # Remove old relationships originating from this file
@@ -349,7 +448,7 @@ class RelationshipGraph:
                 "DELETE FROM entities WHERE scope = ? AND project = ? AND entity_type = 'file' AND name = ?",
                 (scope, project, _normalize(f"{scope}/{project}")),
             )
-            self._index_file(scope, project, content)
+            self._index_file(scope, project, content, observed_at=observed_at)
             self._conn.commit()
 
     def remove_file(self, scope: str, project: str) -> None:
@@ -375,11 +474,13 @@ class RelationshipGraph:
         depth: int = 1,
         predicates: list[str] | None = None,
         allowed_scopes: set[str] | None = None,
+        as_of: str | None = None,
     ) -> list[dict]:
         """Return entities related to *entity* up to *depth* hops.
 
         Performs BFS over the graph. Filters by predicates and allowed_scopes
-        when provided.
+        when provided. When *as_of* is set (ISO 8601 string), only relationships
+        valid at that point in time are returned.
 
         Returns list of {name, entity_type, scope, project, predicate,
                           confidence, distance}.
@@ -415,6 +516,15 @@ class RelationshipGraph:
                 scope_filter = f"AND e.scope IN ({placeholders})"
                 scope_params = list(allowed_scopes)
 
+            temporal_filter = ""
+            temporal_params: list = []
+            if as_of is not None:
+                temporal_filter = (
+                    "AND (r.valid_from IS NULL OR r.valid_from <= ?) "
+                    "AND (r.valid_to IS NULL OR r.valid_to > ?)"
+                )
+                temporal_params = [as_of, as_of]
+
             sql = f"""
                 SELECT e.id, e.name, e.entity_type, e.scope, e.project,
                        r.predicate, r.confidence
@@ -423,6 +533,7 @@ class RelationshipGraph:
                 WHERE r.subject_id = ?
                 {pred_filter}
                 {scope_filter}
+                {temporal_filter}
                 UNION
                 SELECT e.id, e.name, e.entity_type, e.scope, e.project,
                        r.predicate, r.confidence
@@ -431,6 +542,7 @@ class RelationshipGraph:
                 WHERE r.object_id = ?
                 {pred_filter}
                 {scope_filter}
+                {temporal_filter}
             """
 
             while queue:
@@ -438,7 +550,10 @@ class RelationshipGraph:
                 if dist >= depth:
                     continue
 
-                params = [node_id, *pred_params, *scope_params, node_id, *pred_params, *scope_params]
+                params = [
+                    node_id, *pred_params, *scope_params, *temporal_params,
+                    node_id, *pred_params, *scope_params, *temporal_params,
+                ]
                 cur = self._conn.execute(sql, params)
                 for row in cur.fetchall():
                     nbr_id, name, etype, scope, project, predicate, confidence = row
@@ -459,6 +574,63 @@ class RelationshipGraph:
                     queue.append((nbr_id, dist + 1))
 
         return results
+
+    def timeline(self, entity: str) -> list[dict]:
+        """Return all relationships involving *entity*, sorted by observed_at DESC.
+
+        Shows how the entity's connections evolved over time.
+
+        Returns list of {subject, predicate, object, source_scope, source_project,
+                          source_section, confidence, observed_at, valid_from, valid_to}.
+        """
+        norm_entity = _normalize(entity)
+
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT id FROM entities WHERE name = ?",
+                (norm_entity,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return []
+            entity_id = row[0]
+
+            cur = self._conn.execute(
+                """
+                SELECT
+                    es.name AS subject,
+                    r.predicate,
+                    eo.name AS object,
+                    r.source_scope,
+                    r.source_project,
+                    r.source_section,
+                    r.confidence,
+                    r.observed_at,
+                    r.valid_from,
+                    r.valid_to
+                FROM relationships r
+                JOIN entities es ON es.id = r.subject_id
+                JOIN entities eo ON eo.id = r.object_id
+                WHERE r.subject_id = ? OR r.object_id = ?
+                ORDER BY r.observed_at DESC
+                """,
+                (entity_id, entity_id),
+            )
+            return [
+                {
+                    "subject": row[0],
+                    "predicate": row[1],
+                    "object": row[2],
+                    "source_scope": row[3],
+                    "source_project": row[4],
+                    "source_section": row[5],
+                    "confidence": row[6],
+                    "observed_at": row[7],
+                    "valid_from": row[8],
+                    "valid_to": row[9],
+                }
+                for row in cur.fetchall()
+            ]
 
     def entity_info(self, entity: str) -> dict | None:
         """Return info about a single entity including its relationship count."""

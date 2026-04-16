@@ -28,6 +28,67 @@ _rl_move_card = RateLimiter("trello_move_card", 10.0)
 _BASE = "https://api.trello.com/1"
 
 
+# -- Module-level HTTP helpers (take api_key/api_token as parameters) -------
+
+def _trello_get(api_key: str, api_token: str, path: str, extra_params: dict[str, str] | None = None) -> list | dict:
+    params = {"key": api_key, "token": api_token, **(extra_params or {})}
+    url = f"{_BASE}{path}?{urlencode(params)}"
+    req = Request(url, method="GET")
+    with urlopen(req, timeout=15) as resp:  # nosemgrep
+        return json.loads(resp.read())
+
+
+def _trello_post(api_key: str, api_token: str, path: str, extra_params: dict[str, str] | None = None) -> dict:
+    params = {"key": api_key, "token": api_token, **(extra_params or {})}
+    url = f"{_BASE}{path}?{urlencode(params)}"
+    req = Request(url, data=b"", method="POST")
+    with urlopen(req, timeout=15) as resp:  # nosemgrep
+        return json.loads(resp.read())
+
+
+def _trello_put(api_key: str, api_token: str, path: str, extra_params: dict[str, str] | None = None) -> dict:
+    params = {"key": api_key, "token": api_token, **(extra_params or {})}
+    url = f"{_BASE}{path}?{urlencode(params)}"
+    req = Request(url, data=b"", method="PUT")
+    with urlopen(req, timeout=15) as resp:  # nosemgrep
+        return json.loads(resp.read())
+
+
+def fetch_cards_for_index(api_key: str, api_token: str) -> list[dict]:
+    """Fetch all open Trello cards with board/list names resolved.
+
+    Returns a list of dicts suitable for SearchIndex.index_trello_cards():
+      {"name": str, "board_name": str, "list_name": str}
+
+    Iterates all open boards and fetches their open cards. Returns an empty
+    list on any API error (graceful degradation).
+    """
+    try:
+        boards = _trello_get(api_key, api_token, "/members/me/boards", {"fields": "name,url,closed"})
+        open_boards = [b for b in boards if not b.get("closed")]
+
+        result = []
+        for board in open_boards:
+            board_name = board["name"]
+            bid = board["id"]
+
+            lists_data = _trello_get(api_key, api_token, f"/boards/{bid}/lists", {"fields": "name,closed"})
+            list_names = {lst["id"]: lst["name"] for lst in lists_data if not lst.get("closed")}
+
+            cards = _trello_get(api_key, api_token, f"/boards/{bid}/cards", {"fields": "name,idList"})
+            for card in cards:
+                list_name = list_names.get(card.get("idList", ""), "")
+                result.append({
+                    "name": card.get("name", ""),
+                    "board_name": board_name,
+                    "list_name": list_name,
+                })
+        return result
+    except Exception as exc:
+        logger.debug("fetch_cards_for_index: skipping Trello indexing (%s)", exc)
+        return []
+
+
 def register_trello_tools(mcp: FastMCP, api_key: str, api_token: str) -> None:
     """Register Trello tools on the MCP server.
 
@@ -37,31 +98,16 @@ def register_trello_tools(mcp: FastMCP, api_key: str, api_token: str) -> None:
         api_token: Trello API token (generated during Power-Up setup).
     """
 
-    # -- HTTP helpers (auth via query params, not bearer) --------------------
-
-    def _auth_params() -> dict[str, str]:
-        return {"key": api_key, "token": api_token}
+    # -- HTTP helpers (closures delegate to module-level helpers) -----------
 
     def _get(path: str, extra_params: dict[str, str] | None = None) -> list | dict:
-        params = {**_auth_params(), **(extra_params or {})}
-        url = f"{_BASE}{path}?{urlencode(params)}"
-        req = Request(url, method="GET")
-        with urlopen(req, timeout=15) as resp:  # nosemgrep
-            return json.loads(resp.read())
+        return _trello_get(api_key, api_token, path, extra_params)
 
     def _post(path: str, extra_params: dict[str, str] | None = None) -> dict:
-        params = {**_auth_params(), **(extra_params or {})}
-        url = f"{_BASE}{path}?{urlencode(params)}"
-        req = Request(url, data=b"", method="POST")
-        with urlopen(req, timeout=15) as resp:  # nosemgrep
-            return json.loads(resp.read())
+        return _trello_post(api_key, api_token, path, extra_params)
 
     def _put(path: str, extra_params: dict[str, str] | None = None) -> dict:
-        params = {**_auth_params(), **(extra_params or {})}
-        url = f"{_BASE}{path}?{urlencode(params)}"
-        req = Request(url, data=b"", method="PUT")
-        with urlopen(req, timeout=15) as resp:  # nosemgrep
-            return json.loads(resp.read())
+        return _trello_put(api_key, api_token, path, extra_params)
 
     def _api_error(e: HTTPError) -> str:
         try:

@@ -32,6 +32,76 @@ _PRIORITY_EMOJI = {4: "\U0001f534", 3: "\U0001f7e0", 2: "\U0001f535", 1: "\u26aa
 _PRIORITY_LABEL = {4: "urgent", 3: "high", 2: "medium", 1: "normal"}
 
 
+# -- Module-level HTTP helpers (take api_key as parameter) ------------------
+
+def _todoist_headers(api_key: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+
+def _todoist_get(api_key: str, path: str, params: dict[str, str] | None = None) -> list | dict:
+    url = f"{_BASE}{path}"
+    if params:
+        filtered = {k: v for k, v in params.items() if v}
+        if filtered:
+            url = f"{url}?{urlencode(filtered)}"
+    req = Request(url, headers=_todoist_headers(api_key), method="GET")
+    with urlopen(req, timeout=15) as resp:  # nosemgrep
+        result = json.loads(resp.read())
+    # API v1 wraps list endpoints in {"results": [...]}
+    if isinstance(result, dict) and "results" in result:
+        return result["results"]
+    return result
+
+
+def _todoist_post(api_key: str, path: str, body: dict | None = None) -> dict | None:
+    url = f"{_BASE}{path}"
+    data = json.dumps(body).encode() if body else b""
+    req = Request(url, data=data, headers=_todoist_headers(api_key), method="POST")
+    with urlopen(req, timeout=15) as resp:  # nosemgrep
+        raw = resp.read()
+        return json.loads(raw) if raw else None
+
+
+def fetch_tasks_for_index(api_key: str) -> list[dict]:
+    """Fetch all open Todoist tasks with project/section names resolved.
+
+    Returns a list of dicts suitable for SearchIndex.index_todoist_tasks():
+      {"content": str, "project_name": str, "section_name": str}
+
+    Returns an empty list on any API error (graceful degradation).
+    """
+    try:
+        projects = _todoist_get(api_key, "/projects")
+        project_names: dict[str, str] = {p["id"]: p["name"] for p in projects}
+
+        tasks = _todoist_get(api_key, "/tasks")
+        if not tasks:
+            return []
+
+        # Resolve section names for all projects that have tasks
+        project_ids = {t.get("project_id") for t in tasks if t.get("project_id")}
+        section_names: dict[str, str] = {}
+        for pid in project_ids:
+            sections = _todoist_get(api_key, "/sections", {"project_id": pid})
+            for s in sections:
+                section_names[s["id"]] = s["name"]
+
+        result = []
+        for t in tasks:
+            result.append({
+                "content": t.get("content", ""),
+                "project_name": project_names.get(t.get("project_id", ""), "Inbox"),
+                "section_name": section_names.get(t.get("section_id", ""), "") or "",
+            })
+        return result
+    except Exception as exc:
+        logger.debug("fetch_tasks_for_index: skipping Todoist indexing (%s)", exc)
+        return []
+
+
 def register_todoist_tools(mcp: FastMCP, api_key: str) -> None:
     """Register Todoist tools on the MCP server.
 
@@ -40,35 +110,13 @@ def register_todoist_tools(mcp: FastMCP, api_key: str) -> None:
         api_key: Todoist API token (from Settings -> Integrations -> Developer).
     """
 
-    # -- HTTP helpers (closure over api_key) --------------------------------
-
-    def _headers() -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+    # -- HTTP helpers (closure delegates to module-level helpers) -----------
 
     def _get(path: str, params: dict[str, str] | None = None) -> list | dict:
-        url = f"{_BASE}{path}"
-        if params:
-            filtered = {k: v for k, v in params.items() if v}
-            if filtered:
-                url = f"{url}?{urlencode(filtered)}"
-        req = Request(url, headers=_headers(), method="GET")
-        with urlopen(req, timeout=15) as resp:  # nosemgrep
-            result = json.loads(resp.read())
-        # API v1 wraps list endpoints in {"results": [...]}
-        if isinstance(result, dict) and "results" in result:
-            return result["results"]
-        return result
+        return _todoist_get(api_key, path, params)
 
     def _post(path: str, body: dict | None = None) -> dict | None:
-        url = f"{_BASE}{path}"
-        data = json.dumps(body).encode() if body else b""
-        req = Request(url, data=data, headers=_headers(), method="POST")
-        with urlopen(req, timeout=15) as resp:  # nosemgrep
-            raw = resp.read()
-            return json.loads(raw) if raw else None
+        return _todoist_post(api_key, path, body)
 
     def _api_error(e: HTTPError) -> str:
         try:
