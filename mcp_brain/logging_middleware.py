@@ -110,11 +110,19 @@ class MCPLoggingMiddleware:
         except Exception:
             pass
 
-        # Replace receive so downstream gets the buffered body
+        # Replace receive so downstream gets the buffered body on the first
+        # call, then forwards to the real receive() for disconnect detection.
+        # Without this, SSE's _listen_for_disconnect busy-loops because the
+        # fake receive never returns http.disconnect.
         body_snapshot = b"".join(body_chunks)
+        body_replayed = False
 
         async def replay_receive() -> dict:
-            return {"type": "http.request", "body": body_snapshot, "more_body": False}
+            nonlocal body_replayed
+            if not body_replayed:
+                body_replayed = True
+                return {"type": "http.request", "body": body_snapshot, "more_body": False}
+            return await receive()
 
         start = time.monotonic()
         status_code = 200
