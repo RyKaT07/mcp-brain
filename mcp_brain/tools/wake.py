@@ -18,8 +18,6 @@ Hardening:
 """
 
 import logging
-import threading
-import time
 from pathlib import Path
 
 import yaml
@@ -27,6 +25,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import PermissionDenied
+from mcp_brain.rate_limit import RateLimiter
 from mcp_brain.tools._perms import ALL, allowed_subscopes, has_scope, require
 from mcp_brain.tools.briefing import _sanitize_meta_value
 
@@ -39,37 +38,7 @@ _ANY_SUB = "any_sub"
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Rate-limiting state (in-memory, process-lifetime)
-# 1 call per RATE_LIMIT_SECONDS per token_id.
-
-_RATE_LIMIT_SECONDS: float = 10.0
-_rate_lock = threading.Lock()
-_last_wake: dict[str, float] = {}  # {token_id: last_call_epoch}
-
-
-def _check_rate_limit() -> str | None:
-    """Return an error string if the caller is over the rate limit, else None.
-
-    In stdio / god-mode (no access token) rate limiting is skipped — the
-    local dev path is single-user and trusted.
-    """
-    tok = get_access_token()
-    if tok is None:
-        return None  # stdio / god-mode — no limit
-    token_id = tok.client_id
-    now = time.monotonic()
-    with _rate_lock:
-        last = _last_wake.get(token_id)
-        if last is not None and (now - last) < _RATE_LIMIT_SECONDS:
-            remaining = _RATE_LIMIT_SECONDS - (now - last)
-            return (
-                f"Rate limited: brain_wake may be called at most once every "
-                f"{int(_RATE_LIMIT_SECONDS)} seconds per token. "
-                f"Retry in {remaining:.1f}s."
-            )
-        _last_wake[token_id] = now
-    return None
+_rl_wake = RateLimiter("brain_wake", 10.0)
 
 
 # ---------------------------------------------------------------------------
@@ -184,8 +153,8 @@ def register_wake_tools(
             return str(exc)
 
         # ── Rate limit ─────────────────────────────────────────────
-        rate_err = _check_rate_limit()
-        if rate_err is not None:
+        rate_err = _rl_wake.check()
+        if rate_err:
             return rate_err
 
         # ── Audit log ──────────────────────────────────────────────

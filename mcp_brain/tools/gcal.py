@@ -22,9 +22,12 @@ from urllib.request import Request, urlopen
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import PermissionDenied
+from mcp_brain.rate_limit import RateLimiter
 from mcp_brain.tools._perms import require
 
 logger = logging.getLogger(__name__)
+
+_rl_add_event = RateLimiter("gcal_add_event", 10.0)
 
 _API_BASE = "https://www.googleapis.com/calendar/v3"
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -271,6 +274,9 @@ def register_gcal_tools(
             description: Optional event description.
             location: Optional event location.
         """
+        rate_err = _rl_add_event.check()
+        if rate_err:
+            return rate_err
         try:
             require("gcal:write")
         except PermissionDenied as e:

@@ -17,9 +17,13 @@ from urllib.request import Request, urlopen
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import PermissionDenied
+from mcp_brain.rate_limit import RateLimiter
 from mcp_brain.tools._perms import require
 
 logger = logging.getLogger(__name__)
+
+_rl_add = RateLimiter("todoist_add", 10.0)
+_rl_complete = RateLimiter("todoist_complete", 10.0)
 
 _BASE = "https://api.todoist.com/api/v1"
 
@@ -298,6 +302,9 @@ def register_todoist_tools(mcp: FastMCP, api_key: str) -> None:
                       "jutro", "w poniedziałek", "za tydzień".
             description: Optional longer description/notes (markdown).
         """
+        rate_err = _rl_add.check()
+        if rate_err:
+            return rate_err
         try:
             require("todoist:write")
         except PermissionDenied as e:
@@ -366,6 +373,9 @@ def register_todoist_tools(mcp: FastMCP, api_key: str) -> None:
         Args:
             task_id: The task ID to complete. Get IDs from todoist_list().
         """
+        rate_err = _rl_complete.check()
+        if rate_err:
+            return rate_err
         try:
             require("todoist:write")
         except PermissionDenied as e:

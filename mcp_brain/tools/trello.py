@@ -17,9 +17,13 @@ from urllib.request import Request, urlopen
 from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.auth import PermissionDenied
+from mcp_brain.rate_limit import RateLimiter
 from mcp_brain.tools._perms import require
 
 logger = logging.getLogger(__name__)
+
+_rl_add_card = RateLimiter("trello_add_card", 10.0)
+_rl_move_card = RateLimiter("trello_move_card", 10.0)
 
 _BASE = "https://api.trello.com/1"
 
@@ -256,6 +260,9 @@ def register_trello_tools(mcp: FastMCP, api_key: str, api_token: str) -> None:
             description: Optional card description (markdown supported).
             due: Optional due date in ISO 8601 format (e.g. "2026-04-15").
         """
+        rate_err = _rl_add_card.check()
+        if rate_err:
+            return rate_err
         try:
             require("trello:write")
         except PermissionDenied as e:
@@ -298,6 +305,9 @@ def register_trello_tools(mcp: FastMCP, api_key: str, api_token: str) -> None:
             board: Board name (case-insensitive).
             list: Target list name (case-insensitive).
         """
+        rate_err = _rl_move_card.check()
+        if rate_err:
+            return rate_err
         try:
             require("trello:write")
         except PermissionDenied as e:
