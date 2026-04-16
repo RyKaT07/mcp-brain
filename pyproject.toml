@@ -10,6 +10,7 @@ dependencies = [
     "starlette>=0.40",
     "uvicorn[standard]>=0.30.0",
     "defusedxml>=0.7.1",
+    "anthropic>=0.40.0",
 ]
 
 [project.optional-dependencies]
