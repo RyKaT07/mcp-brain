@@ -89,6 +89,34 @@ TRELLO_API_TOKEN = os.getenv("TRELLO_API_TOKEN", "")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REFRESH_TOKEN = os.getenv("GOOGLE_REFRESH_TOKEN", "")
+OPENAI_VERIFICATION_TOKEN = os.getenv("MCP_OPENAI_VERIFICATION_TOKEN", "")
+
+_CSP_VALUE = (
+    "default-src 'self'; "
+    "connect-src 'self' https://api.todoist.com https://api.trello.com "
+    "https://*.nextcloud.* https://www.googleapis.com https://oauth2.googleapis.com"
+)
+
+
+class _CSPMiddleware:
+    """Pure-ASGI middleware that appends a Content-Security-Policy header to all HTTP responses."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def _send(message):
+            if message["type"] == "http.response.start":
+                from starlette.datastructures import MutableHeaders
+                headers = MutableHeaders(scope=message)
+                headers.append("content-security-policy", _CSP_VALUE)
+            await send(message)
+
+        await self.app(scope, receive, _send)
 
 
 def _load_instructions(knowledge_dir: Path) -> str | None:
@@ -397,7 +425,7 @@ def _build_app():
     """
     from starlette.applications import Starlette
     from starlette.requests import Request
-    from starlette.responses import JSONResponse
+    from starlette.responses import JSONResponse, Response
     from starlette.routing import Route
 
     # Instantiating the inner app also lazy-creates `mcp.session_manager`,
@@ -406,6 +434,11 @@ def _build_app():
 
     async def healthz(_request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok"})
+
+    async def openai_verification(_request: Request) -> Response:
+        if not OPENAI_VERIFICATION_TOKEN:
+            return Response(status_code=404)
+        return Response(content=OPENAI_VERIFICATION_TOKEN, media_type="text/plain")
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -440,6 +473,7 @@ def _build_app():
         debug=inner.debug,
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
+            Route("/.well-known/openai-verification", openai_verification, methods=["GET"]),
             *admin_routes,
             *inner.routes,  # /mcp (streamable HTTP) + any auth metadata routes
         ],
@@ -450,7 +484,9 @@ def _build_app():
     # Wrap with structured tool-call logging.  MCPLoggingMiddleware buffers
     # the request body so it can inspect JSON-RPC method + tool name without
     # interfering with the downstream handler.
-    return MCPLoggingMiddleware(outer)  # type: ignore[return-value]
+    # _CSPMiddleware wraps the outermost app so all HTTP responses — including
+    # healthz, the verification endpoint, and MCP routes — get the CSP header.
+    return _CSPMiddleware(MCPLoggingMiddleware(outer))  # type: ignore[return-value]
 
 
 def main():
