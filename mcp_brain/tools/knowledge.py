@@ -584,6 +584,8 @@ def register_knowledge_tools(
             if not scope_dir.is_dir():
                 continue
             for md_file in sorted(scope_dir.glob("*.md")):
+                if md_file.is_symlink():
+                    continue
                 scope_name = scope_dir.name
                 project_name = md_file.stem
 
@@ -801,7 +803,7 @@ def register_knowledge_tools(
         for scope_dir in search_dirs:
             if not scope_dir.is_dir():
                 continue
-            md_files = sorted(scope_dir.glob("*.md"))
+            md_files = [f for f in sorted(scope_dir.glob("*.md")) if not f.is_symlink()]
             if not md_files:
                 continue
 
@@ -954,6 +956,8 @@ def register_knowledge_tools(
         ref_re = re.compile(rf"`{re.escape(safe_old)}/([a-zA-Z0-9_-]+)`")
         updated_refs: list[Path] = []
         for md_file in effective_dir.rglob("*.md"):
+            if md_file.is_symlink():
+                continue
             try:
                 text = md_file.read_text(encoding="utf-8")
             except OSError:
