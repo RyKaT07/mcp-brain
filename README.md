@@ -277,6 +277,39 @@ Knowledge and tokens live in bind-mounted volumes — rollbacks are safe.
 
 ---
 
+## Claude Marketplace
+
+mcp-brain is available on the [Claude Code marketplace](https://claude.ai/marketplace). The plugin manifest lives in [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json).
+
+### Install via marketplace
+
+Search for **mcp-brain** in the Claude Code marketplace and follow the prompts. You will be asked to provide:
+
+- `BRAIN_URL` — the base URL of your running mcp-brain instance (e.g. `https://api.brainvlt.com`)
+- `BRAIN_TOKEN` — a bearer token from your `data/auth.yaml`
+
+### Manual install (Claude Code CLI)
+
+Add to your `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "brain": {
+      "type": "http",
+      "url": "https://<your-domain>/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-token>"
+      }
+    }
+  }
+}
+```
+
+See [docs/claude-setup.md](docs/claude-setup.md) for the full setup guide including OAuth for claude.ai.
+
+---
+
 ## License
 
 Licensed under [PolyForm Noncommercial 1.0.0](LICENSE).
