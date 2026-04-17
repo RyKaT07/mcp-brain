@@ -399,10 +399,11 @@ class ChainedProvider(
         if self.key_store is not None:
             key_entry = self.key_store.by_token(token)
             if key_entry is not None:
+                scopes = list(key_entry.scopes) if key_entry.scopes else ["*"]
                 return AccessToken(
                     token=key_entry.token,
                     client_id=key_entry.id,  # UUID — looked up by _perms.get_current_user_id
-                    scopes=list(key_entry.scopes),
+                    scopes=scopes,
                 )
         return None
 
