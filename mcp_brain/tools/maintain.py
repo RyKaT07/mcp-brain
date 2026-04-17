@@ -338,6 +338,11 @@ def _write_section(
     safe_project = _SAFE_NAME_RE.sub("", project)
     filepath = knowledge_dir / safe_scope / f"{safe_project}.md"
 
+    # Symlink traversal guard: resolve and verify path stays within knowledge_dir
+    resolved = filepath.resolve()
+    if not resolved.is_relative_to(knowledge_dir.resolve()):
+        return f"Error: Path escapes knowledge directory: {scope}/{project}"
+
     filepath.parent.mkdir(parents=True, exist_ok=True)
     lock_path = filepath.with_suffix(".lock")
     lock_path.touch(exist_ok=True)
@@ -964,6 +969,10 @@ def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
         # Apply the change
         try:
             filepath = effective_dir / scope / f"{project}.md"
+            # Symlink traversal guard: resolve and verify path stays within knowledge dir
+            resolved = filepath.resolve()
+            if not resolved.is_relative_to(effective_dir.resolve()):
+                return f"Error: Path escapes knowledge directory: {scope}/{project}"
             if filepath.exists():
                 content = filepath.read_text(encoding="utf-8")
             else:
