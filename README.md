@@ -50,8 +50,8 @@ Your notes stay in plain-text markdown files on a machine you control. A git rep
 
 | Client | Transport | How to connect |
 |--------|-----------|----------------|
-| **Claude Code** (CLI) | Streamable HTTP | `~/.claude.json` — bearer header |
-| **claude.ai** (web / iOS / Android) | OAuth 2.1 | Settings → Connectors → Add custom connector |
+| **Claude Code** (CLI) | Streamable HTTP | [`~/.claude.json` — bearer header](docs/claude-setup.md#option-a--claude-code-cli-bearer-token-local-use) |
+| **claude.ai** (web / iOS / Android / desktop) | OAuth 2.1 | [Customize → Connectors → Add custom connector](docs/claude-setup.md#option-b--claudeai-web--ios--android--desktop) |
 | **Cursor** | Streamable HTTP | MCP settings — bearer header |
 | **Windsurf** | Streamable HTTP | MCP settings — bearer header |
 | **ChatGPT / custom GPTs** | Streamable HTTP | Plugin manifest — bearer header |
@@ -129,15 +129,16 @@ Add to `~/.claude.json`:
 }
 ```
 
-## Connect from claude.ai (web / iOS / Android)
+## Connect from claude.ai (web / iOS / Android / desktop)
 
-1. **Settings → Connectors → Add custom connector**
+1. **Customize → Connectors → Add custom connector** (Pro/Max) or **Organization settings → Connectors** (Team/Enterprise)
 2. **URL:** `https://mcp.yourdomain.tld/mcp`
 3. Leave `OAuth Client ID` and `OAuth Client Secret` **empty** — Dynamic Client Registration handles this automatically
 4. Click **Add** → your browser opens the consent page → enter your `MCP_OAUTH_ADMIN_SECRET` → **Authorize**
-5. Done. Works across every Claude surface on the same account.
+5. In a new chat, click **+** → **Connectors** and toggle mcp-brain on
+6. Done. Works across every Claude surface on the same account.
 
-Full OAuth setup: [`docs/auth.md`](docs/auth.md).
+Full setup guide: [`docs/claude-setup.md`](docs/claude-setup.md) · OAuth reference: [`docs/auth.md`](docs/auth.md).
 
 ---
 

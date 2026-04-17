@@ -26,10 +26,7 @@ tokens:
 
 The `id` field is what shows up in logs ("token cursor-school accessed knowledge_read school/power-electronics"). The token value itself is never logged.
 
-**After editing `auth.yaml`, restart the container** — there is no hot reload:
-```bash
-cd /opt/mcp-brain && docker compose restart
-```
+**After editing `auth.yaml`, changes take effect within 5 seconds** — the server watches the file and hot-reloads automatically. No container restart needed.
 
 ## Generating a token
 

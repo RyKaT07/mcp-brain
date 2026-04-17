@@ -187,7 +187,7 @@ on the LXC (the installer generates it on fresh installs; see
 [Upgrading an existing install](#upgrading-an-existing-install-to-the-oauth-flow)
 for how to add it to an older install).
 
-1. Sign in at [claude.ai](https://claude.ai) → **Settings → Connectors → Add custom connector**
+1. Sign in at [claude.ai](https://claude.ai) → **Customize → Connectors → Add custom connector** (Pro/Max plans) or **Organization settings → Connectors → Add** (Team/Enterprise)
 2. **Name:** `mcp-brain` (or whatever you prefer)
 3. **Remote MCP server URL:** `https://mcp.yourdomain.tld/mcp`
 4. **Leave OAuth Client ID and OAuth Client Secret EMPTY** — mcp-brain
@@ -215,6 +215,8 @@ re-add the connector).
 OAuth-issued tokens keep working (the secret only gates the consent
 page for new registrations). Full scope reference and the rationale
 behind this split-brain auth model are in [`auth.md`](auth.md).
+
+Dedicated setup guide with troubleshooting: [`claude-setup.md`](claude-setup.md).
 
 ## Update
 
