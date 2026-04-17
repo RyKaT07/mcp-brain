@@ -66,6 +66,7 @@ _AUTH_YAML_INLINE = os.getenv("MCP_AUTH_YAML", "")
 if _AUTH_YAML_INLINE:
     AUTH_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     AUTH_CONFIG_PATH.write_text(_AUTH_YAML_INLINE, encoding="utf-8")
+    os.chmod(AUTH_CONFIG_PATH, 0o600)
 
 OAUTH_STORE_PATH = Path(os.getenv("MCP_OAUTH_STORE", "./data/oauth-state.json"))
 KEY_STORE_PATH = Path(os.getenv("MCP_KEY_STORE", "./data/keys.json"))
