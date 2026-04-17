@@ -57,8 +57,10 @@ def _check_admin_auth(request: Request, admin_secret: str) -> bool:
 def build_admin_routes(
     key_store: KeyStore,
     admin_secret: str,
+    integration_store: IntegrationStore | None = None,
+    on_integration_change: Callable[[str, dict[str, str] | None], None] | None = None,
 ) -> list[Route]:
-    """Return Starlette Route objects for the /admin/tokens API."""
+    """Return Starlette Route objects for the /admin/tokens and /admin/integrations APIs."""
 
     async def create_token(request: Request) -> JSONResponse:
         if not _check_admin_auth(request, admin_secret):
