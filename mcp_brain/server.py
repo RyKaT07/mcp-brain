@@ -32,6 +32,7 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_brain.admin import build_admin_routes
 from mcp_brain.auth import YamlTokenVerifier
+from mcp_brain.integration_store import IntegrationStore
 from mcp_brain.logging_middleware import MCPLoggingMiddleware
 from mcp_brain.keystore import KeyStore
 from mcp_brain.oauth import ChainedProvider, register_oauth_consent_route
@@ -69,6 +70,7 @@ if _AUTH_YAML_INLINE:
 OAUTH_STORE_PATH = Path(os.getenv("MCP_OAUTH_STORE", "./data/oauth-state.json"))
 KEY_STORE_PATH = Path(os.getenv("MCP_KEY_STORE", "./data/keys.json"))
 USAGE_STORE_PATH = Path(os.getenv("MCP_USAGE_STORE", "./data/usage.json"))
+INTEGRATION_STORE_PATH = Path(os.getenv("MCP_INTEGRATION_STORE", "./data/integrations.json"))
 OAUTH_ADMIN_SECRET = os.getenv("MCP_OAUTH_ADMIN_SECRET", "")
 ADMIN_SECRET = os.getenv("MCP_ADMIN_SECRET", "")
 HOST = os.getenv("MCP_HOST", "0.0.0.0")
@@ -205,6 +207,7 @@ def _load_briefing_trigger(knowledge_dir: Path) -> str:
 # instances without threading issues.
 key_store = KeyStore(KEY_STORE_PATH)
 usage_meter = UsageMeter(USAGE_STORE_PATH)
+integration_store = IntegrationStore(INTEGRATION_STORE_PATH)
 
 
 def _build_mcp() -> FastMCP:
