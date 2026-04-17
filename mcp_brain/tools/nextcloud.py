@@ -22,6 +22,7 @@ from urllib.request import HTTPBasicAuthHandler, HTTPPasswordMgrWithDefaultRealm
 from defusedxml.ElementTree import fromstring as ET_fromstring
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.tools._perms import require
@@ -215,7 +216,7 @@ def register_nextcloud_tools(
 
     # -- Tools ---------------------------------------------------------------
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True))
     def nextcloud_browse(path: str = "") -> str:
         """Browse files and folders on Nextcloud.
 
@@ -253,7 +254,7 @@ def register_nextcloud_tools(
         except URLError as e:
             return f"Nextcloud connection error: {e}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True))
     def nextcloud_read(path: str) -> str | list[dict]:
         """Read a file from Nextcloud. Auto-detects file type by extension.
 

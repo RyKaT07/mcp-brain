@@ -7,6 +7,7 @@ from pathlib import Path
 
 import yaml
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.tools._perms import ALL, allowed_subscopes, require
@@ -14,7 +15,7 @@ from mcp_brain.tools._perms import ALL, allowed_subscopes, require
 
 def register_secrets_tools(mcp: FastMCP, knowledge_dir: Path):
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def secrets_schema(scope: str | None = None) -> str:
         """Look up what secrets/credentials exist and where they are stored.
 

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import yaml
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.rate_limit import RateLimiter
@@ -39,7 +40,7 @@ def _archive_dir(knowledge_dir: Path) -> Path:
 
 def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def inbox_list(source: str | None = None, limit: int = 20) -> str:
         """List pending inbox items awaiting review.
 
@@ -83,7 +84,7 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
             )
         return "\n".join(lines)
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def inbox_show(item_id: str) -> str:
         """Show the full contents of an inbox item, including raw_snippet.
 
@@ -121,7 +122,7 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
 
         return yaml.dump(item_data, allow_unicode=True, sort_keys=False)
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     def inbox_add(
         source: str,
         summary: str,
@@ -166,7 +167,7 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
 
         return f"Added to inbox: [{item_id}] {summary}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     def inbox_accept(item_id: str) -> str:
         """Accept an inbox item — merge its content into the target knowledge file.
 
@@ -245,7 +246,7 @@ def register_inbox_tools(mcp: FastMCP, knowledge_dir: Path):
 
         return f"Accepted [{item_id}] → {scope}/{project} § {section}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     def inbox_reject(item_id: str) -> str:
         """Reject an inbox item — archive it without merging.
 

@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.graph import RelationshipGraph
@@ -247,7 +248,7 @@ def register_knowledge_tools(
 
     update_description = _build_knowledge_update_description(tool_policy)
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def knowledge_read(scope: str, project: str, section: str | None = None) -> str:
         """Read a knowledge file or a specific section.
 
@@ -292,7 +293,7 @@ def register_knowledge_tools(
             return f"{provenance}\n## {section}\n{sections[section]}"
         return f"Section '{section}' not found. Available: {', '.join(s for s in sections if s != '_preamble')}"
 
-    @mcp.tool(description=update_description)
+    @mcp.tool(description=update_description, annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     def knowledge_update(scope: str, project: str, section: str, content: str) -> str:
         # The MCP-facing description comes from `update_description` above
         # (baseline + optional `## Tool policy` prepend). This Python
@@ -372,7 +373,7 @@ def register_knowledge_tools(
             finally:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def knowledge_list(scope: str | None = None) -> str:
         """List available knowledge files.
 
@@ -414,7 +415,7 @@ def register_knowledge_tools(
 
         return "\n".join(results) if results else "No knowledge files found."
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     def knowledge_undo(steps: int = 1) -> str:
         """Revert the most recent knowledge commit(s).
 
@@ -539,7 +540,7 @@ def register_knowledge_tools(
     # knowledge_freshness — per-file last-modified dates from git
     # ------------------------------------------------------------------
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def knowledge_freshness(scope: str | None = None) -> str:
         """Check when knowledge files were last updated (via git history).
 
@@ -649,7 +650,7 @@ def register_knowledge_tools(
         lines.append("Legend: 🟢 ≤7d  🟡 ≤30d  🟠 ≤90d  🔴 >90d  ❓ no history")
         return "\n".join(lines)
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     def knowledge_delete(scope: str, project: str) -> str:
         """Delete a knowledge file permanently.
 
@@ -752,7 +753,7 @@ def register_knowledge_tools(
     # knowledge_map — vault structure overview for navigation
     # ------------------------------------------------------------------
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def knowledge_map(scope: str | None = None, include_sections: bool = True) -> str:
         """Get a structural map of the knowledge vault for navigation.
 
@@ -889,7 +890,8 @@ def register_knowledge_tools(
             "Args:\n"
             "  old_name: Current scope name (must exist)\n"
             "  new_name: New scope name (must not exist)"
-        )
+        ),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False),
     )
     def scope_rename(old_name: str, new_name: str) -> str:
         """Rename a knowledge scope directory and update all references."""

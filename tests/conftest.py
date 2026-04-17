@@ -57,6 +57,19 @@ mcp_server.auth = mcp_server_auth
 mcp_server.fastmcp = mcp_server_fastmcp
 mcp_stub.server = mcp_server
 
+mcp_types = _make_stub("mcp.types")
+
+class _ToolAnnotations:
+    def __init__(self, *, readOnlyHint=None, destructiveHint=None, openWorldHint=None, idempotentHint=None, title=None):
+        self.readOnlyHint = readOnlyHint
+        self.destructiveHint = destructiveHint
+        self.openWorldHint = openWorldHint
+        self.idempotentHint = idempotentHint
+        self.title = title
+
+mcp_types.ToolAnnotations = _ToolAnnotations
+mcp_stub.types = mcp_types
+
 mcp_server_auth_middleware = _make_stub("mcp.server.auth.middleware")
 mcp_server_auth_middleware_ctx = _make_stub("mcp.server.auth.middleware.auth_context")
 
@@ -68,6 +81,7 @@ mcp_server_auth.middleware = mcp_server_auth_middleware
 
 for name, mod in [
     ("mcp", mcp_stub),
+    ("mcp.types", mcp_types),
     ("mcp.server", mcp_server),
     ("mcp.server.auth", mcp_server_auth),
     ("mcp.server.auth.provider", mcp_server_auth_provider),

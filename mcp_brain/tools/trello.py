@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.rate_limit import RateLimiter
@@ -170,7 +171,7 @@ def register_trello_tools(mcp: FastMCP, api_key: str, api_token: str) -> None:
 
     # -- Tools ---------------------------------------------------------------
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True))
     def trello_boards() -> str:
         """List all open Trello boards.
 
@@ -194,7 +195,7 @@ def register_trello_tools(mcp: FastMCP, api_key: str, api_token: str) -> None:
         except URLError as e:
             return f"Trello connection error: {e}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True))
     def trello_lists(board: str) -> str:
         """List all open lists on a Trello board.
 
@@ -223,7 +224,7 @@ def register_trello_tools(mcp: FastMCP, api_key: str, api_token: str) -> None:
         except URLError as e:
             return f"Trello connection error: {e}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True))
     def trello_cards(board: str, list: str | None = None) -> str:
         """List cards on a Trello board, optionally filtered by list.
 
@@ -288,7 +289,7 @@ def register_trello_tools(mcp: FastMCP, api_key: str, api_token: str) -> None:
         except URLError as e:
             return f"Trello connection error: {e}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True))
     def trello_add_card(
         name: str,
         board: str,
@@ -338,7 +339,7 @@ def register_trello_tools(mcp: FastMCP, api_key: str, api_token: str) -> None:
         except URLError as e:
             return f"Trello connection error: {e}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True))
     def trello_move_card(card_id: str, board: str, list: str) -> str:
         """Move a card to a different list on the same board.
 

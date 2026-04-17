@@ -16,6 +16,7 @@ from urllib.error import HTTPError, URLError
 
 import yaml
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.tools._perms import ALL, allowed_subscopes, require
@@ -390,7 +391,7 @@ def register_briefing_tools(
     """
     briefing_description = _build_briefing_description(briefing_trigger)
 
-    @mcp.tool(description=briefing_description)
+    @mcp.tool(description=briefing_description, annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def get_briefing(scope: str | None = None) -> str:
         if scope is not None:
             try:

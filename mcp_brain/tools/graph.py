@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.graph import RelationshipGraph
@@ -23,7 +24,7 @@ def register_graph_tools(
 ) -> None:
     """Register knowledge_related and knowledge_entities tools on the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def knowledge_related(
         entity: str,
         depth: int = 1,
@@ -145,7 +146,7 @@ def register_graph_tools(
 
         return "\n".join(lines)
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def knowledge_entities(
         scope: str | None = None,
         entity_type: str | None = None,
@@ -224,7 +225,7 @@ def register_graph_tools(
 
         return "\n".join(lines)
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def knowledge_timeline(
         entity: str,
         scope: str | None = None,

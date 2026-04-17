@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.search import SearchIndex
@@ -24,7 +25,7 @@ def register_search_tools(
 ) -> None:
     """Register the knowledge_search tool on the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def knowledge_search(
         query: str,
         scope: str | None = None,

@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.rate_limit import RateLimiter
@@ -173,7 +174,7 @@ def register_todoist_tools(mcp: FastMCP, api_key: str) -> None:
 
     # -- Tools ---------------------------------------------------------------
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True))
     def todoist_projects() -> str:
         """List all Todoist projects.
 
@@ -197,7 +198,7 @@ def register_todoist_tools(mcp: FastMCP, api_key: str) -> None:
         except URLError as e:
             return f"Todoist connection error: {e}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True))
     def todoist_sections(project: str) -> str:
         """List sections in a Todoist project.
 
@@ -226,7 +227,7 @@ def register_todoist_tools(mcp: FastMCP, api_key: str) -> None:
         except URLError as e:
             return f"Todoist connection error: {e}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True))
     def todoist_list(
         project: str | None = None,
         section: str | None = None,
@@ -323,7 +324,7 @@ def register_todoist_tools(mcp: FastMCP, api_key: str) -> None:
         except URLError as e:
             return f"Todoist connection error: {e}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True))
     def todoist_add(
         content: str,
         project: str | None = None,
@@ -411,7 +412,7 @@ def register_todoist_tools(mcp: FastMCP, api_key: str) -> None:
         except URLError as e:
             return f"Todoist connection error: {e}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True))
     def todoist_complete(task_id: str) -> str:
         """Complete (close) a task in Todoist.
 

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import yaml
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.rate_limit import RateLimiter
@@ -47,7 +48,7 @@ def _git_commit_meta(knowledge_dir: Path, meta_path: Path) -> None:
 def register_meta_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
     """Register meta_read and meta_update tools on *mcp*."""
 
-    @mcp.tool(description="Read the raw content of meta.yaml (the briefing config).")
+    @mcp.tool(description="Read the raw content of meta.yaml (the briefing config).", annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def meta_read() -> str:
         """Return the raw YAML text of knowledge/meta.yaml."""
         try:
@@ -66,7 +67,8 @@ def register_meta_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
             "Validates the YAML before writing. "
             "Args:\n"
             "  content: Full new YAML text for meta.yaml"
-        )
+        ),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False),
     )
     def meta_update(content: str) -> str:
         """Validate and write new meta.yaml content."""

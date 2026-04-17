@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.rate_limit import RateLimiter
@@ -169,7 +170,7 @@ def register_gcal_tools(
 
     # -- Tools ---------------------------------------------------------------
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True))
     def gcal_calendars() -> str:
         """List available Google Calendars.
 
@@ -198,7 +199,7 @@ def register_gcal_tools(
         except URLError as e:
             return f"Google Calendar connection error: {e}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True))
     def gcal_events(calendar: str | None = None, days: int = 7) -> str:
         """List upcoming events from Google Calendar.
 
@@ -250,7 +251,7 @@ def register_gcal_tools(
         except URLError as e:
             return f"Google Calendar connection error: {e}"
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True))
     def gcal_add_event(
         title: str,
         start: str,

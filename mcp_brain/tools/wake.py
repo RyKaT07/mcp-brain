@@ -24,6 +24,7 @@ from pathlib import Path
 import yaml
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.rate_limit import RateLimiter
@@ -144,7 +145,7 @@ def register_wake_tools(
     except Exception:
         pass
 
-    @mcp.tool(description=description)
+    @mcp.tool(description=description, annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def brain_wake() -> str:
         """Activate brain context. Returns briefing, policy, and tool inventory."""
         # ── Scope gate ─────────────────────────────────────────────

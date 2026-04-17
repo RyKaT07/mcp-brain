@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.keystore import KeyStore
@@ -39,7 +40,7 @@ def register_apikeys_tools(
 ) -> None:
     """Register apikeys_* tools on the MCP server."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     def apikeys_create(
         user_id: str,
         scopes: list[str],
@@ -81,7 +82,7 @@ def register_apikeys_tools(
             f"Save the token now — it will not be shown again."
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     def apikeys_revoke(key_id: str) -> str:
         """Revoke an API key by its UUID.
 
@@ -101,7 +102,7 @@ def register_apikeys_tools(
             return f"Key {key_id} revoked successfully."
         return f"Key {key_id} not found or already revoked."
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def apikeys_list(user_id: str | None = None) -> str:
         """List active API keys.
 
@@ -134,7 +135,7 @@ def register_apikeys_tools(
             header += f" for user '{user_id}'"
         return header + ":\n" + "\n".join(lines)
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def apikeys_usage(key_id: str | None = None) -> str:
         """Show per-key usage statistics (call counts per tool).
 

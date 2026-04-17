@@ -31,6 +31,7 @@ from pathlib import Path
 
 import yaml
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.tools._perms import (
@@ -376,7 +377,7 @@ def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
     # Original read-only audit tool (unchanged, backwards compatible)
     # ------------------------------------------------------------------
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def knowledge_maintain(
         scope: str | None = None,
         stale_days: int = 90,
@@ -591,7 +592,7 @@ def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
     # Interactive session tools
     # ------------------------------------------------------------------
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     def maintain_start(
         scope: str | None = None,
         stale_days: int = 90,
@@ -733,7 +734,7 @@ def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
         )
         return header + _format_next_question(session)
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     def maintain_answer(session_id: str, answer: str) -> str:
         """Answer the current question in a maintain session.
 
@@ -913,7 +914,7 @@ def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
             "diff": diff_text,
         })
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     def maintain_confirm(session_id: str) -> str:
         """Apply the proposed change from maintain_answer and advance to next question.
 
@@ -1011,7 +1012,7 @@ def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
         _save_session(session_path, session)
         return f"✅ {result_msg}\n\n" + _format_next_question(session)
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     def maintain_skip(session_id: str) -> str:
         """Skip the current question without making any changes.
 
