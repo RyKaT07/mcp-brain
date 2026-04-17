@@ -473,7 +473,8 @@ def _build_app():
     outer = Starlette(
         debug=inner.debug,
         routes=[
-            Route("/healthz", healthz, methods=["GET"]),
+            Route("/healthz", healthz, methods=["GET", "HEAD"]),
+            Route("/health", healthz, methods=["GET", "HEAD"]),
             Route("/.well-known/openai-verification", openai_verification, methods=["GET"]),
             *admin_routes,
             *inner.routes,  # /mcp (streamable HTTP) + any auth metadata routes
