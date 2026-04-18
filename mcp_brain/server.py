@@ -58,6 +58,7 @@ from mcp_brain.graph import RelationshipGraph
 
 KNOWLEDGE_DIR = Path(os.getenv("MCP_KNOWLEDGE_DIR", "./knowledge"))
 AUTH_CONFIG_PATH = Path(os.getenv("MCP_AUTH_CONFIG", "./config/auth.yaml"))
+ISOLATION_MODE = os.getenv("MCP_ISOLATION", "")
 
 # Support inline auth config via env var — used by per-user container
 # provisioning where the panel passes auth.yaml content directly.
@@ -498,9 +499,21 @@ def _build_app():
 
 
 def main():
-    """Entry point. Honors MCP_TRANSPORT env (`stdio` or `http`)."""
+    """Entry point. Honors MCP_TRANSPORT env (`stdio` or `http`).
+
+    When ``MCP_ISOLATION=bwrap`` is set the isolation manager entrypoint is
+    launched instead of the shared server.  The isolation manager accepts HTTP
+    connections, validates bearer tokens, resolves user_id, and proxies each
+    request to a per-user bwrap-sandboxed worker.  Default remains the current
+    shared server for backward compatibility.
+    """
     import logging as _logging
     _startup_log = _logging.getLogger(__name__)
+
+    if ISOLATION_MODE == "bwrap":
+        from mcp_brain.isolation.entrypoint import main as isolation_main
+        isolation_main()
+        return
 
     if TRANSPORT == "stdio":
         # ── Security warning: stdio bypasses all authentication ─────────────
