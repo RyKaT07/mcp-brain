@@ -39,6 +39,7 @@ from mcp_brain.oauth import ChainedProvider, register_oauth_consent_route
 from mcp_brain.usage import UsageMeter
 from mcp_brain.tools import _perms
 from mcp_brain.tools.apikeys import register_apikeys_tools
+from mcp_brain.tools.oauth_connections import register_oauth_connections_tools
 from mcp_brain.tools.briefing import register_briefing_tools
 from mcp_brain.tools.inbox import register_inbox_tools
 from mcp_brain.tools.knowledge import register_knowledge_tools
@@ -312,6 +313,7 @@ def _build_mcp() -> FastMCP:
         # (i.e. before _build_app()) because custom routes are appended
         # to the inner Starlette at app-build time.
         register_oauth_consent_route(mcp, provider)
+        register_oauth_connections_tools(mcp, provider)
 
     # Register multi-user helpers so knowledge tools can resolve user dirs
     # and meter calls against the active key.

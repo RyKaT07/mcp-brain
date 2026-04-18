@@ -78,6 +78,7 @@ class AccessTokenRecord(BaseModel):
     scopes: list[str]
     expires_at: int
     resource: str | None = None
+    connection_name: str | None = None
 
 
 class RefreshTokenRecord(BaseModel):
@@ -88,6 +89,7 @@ class RefreshTokenRecord(BaseModel):
     scopes: list[str]
     expires_at: int | None = None
     resource: str | None = None
+    connection_name: str | None = None
 
 
 class OAuthStoreModel(BaseModel):
@@ -252,6 +254,42 @@ class OAuthStore:
             return True
         return False
 
+    def delete_refresh_tokens_for_client(self, client_id: str) -> int:
+        to_delete = [
+            t for t, rec in self._data.refresh_tokens.items()
+            if rec.client_id == client_id
+        ]
+        for t in to_delete:
+            del self._data.refresh_tokens[t]
+        if to_delete:
+            self._save()
+        return len(to_delete)
+
+    def list_connections(self) -> list[dict]:
+        """Return a deduplicated list of active OAuth connections grouped by client_id.
+
+        Each entry includes client_id, client_name, connection_name, scopes,
+        and expires_at sourced from the most-recently-issued access token for
+        that client.  Expired tokens are skipped (they are pruned on next
+        _save(), but may still be in memory).
+        """
+        now = int(time.time())
+        by_client: dict[str, dict] = {}
+        for rec in self._data.access_tokens.values():
+            if rec.expires_at < now:
+                continue
+            existing = by_client.get(rec.client_id)
+            if existing is None or rec.expires_at > existing["expires_at"]:
+                client = self._data.clients.get(rec.client_id)
+                by_client[rec.client_id] = {
+                    "client_id": rec.client_id,
+                    "client_name": client.client_name if client else None,
+                    "connection_name": rec.connection_name,
+                    "scopes": rec.scopes,
+                    "expires_at": rec.expires_at,
+                }
+        return list(by_client.values())
+
 
 # -----------------------------------------------------------------------------
 # In-memory transient stores (authorization codes, pending consents)
@@ -270,6 +308,7 @@ class PendingConsent:
     client: OAuthClientInformationFull
     params: AuthorizationParams
     created_at: float
+    connection_name: str | None = None
 
 
 class PendingConsentStore:
@@ -370,6 +409,9 @@ class ChainedProvider(
         self.key_store = key_store  # dynamic API key store (may be None)
         self.panel_url = panel_url.rstrip("/") if panel_url else ""
         self.consent_signing_secret = consent_signing_secret
+        # Transient map from auth-code string → connection_name (populated in
+        # complete_authorize, consumed in exchange_authorization_code).
+        self._code_connection_names: dict[str, str | None] = {}
 
     # ------------------------------------------------------------------ the chain
 
@@ -507,6 +549,7 @@ class ChainedProvider(
             resource=params.resource,
         )
         self.auth_codes.put(auth_code)
+        self._code_connection_names[code_str] = entry.connection_name
 
         logger.info(
             "oauth: consent approved pending=%s client=%s code=%s...",
@@ -572,6 +615,8 @@ class ChainedProvider(
                 "authorization code already used or expired",
             )
 
+        connection_name = self._code_connection_names.pop(authorization_code.code, None)
+
         now = int(time.time())
         access_token_str = f"tok_oauth_{secrets.token_hex(32)}"
         refresh_token_str = f"ref_oauth_{secrets.token_hex(32)}"
@@ -582,6 +627,7 @@ class ChainedProvider(
             scopes=list(authorization_code.scopes),
             expires_at=now + self.access_token_ttl_s,
             resource=authorization_code.resource,
+            connection_name=connection_name,
         )
         refresh_rec = RefreshTokenRecord(
             token=refresh_token_str,
@@ -589,6 +635,7 @@ class ChainedProvider(
             scopes=list(authorization_code.scopes),
             expires_at=None,
             resource=authorization_code.resource,
+            connection_name=connection_name,
         )
         self.store.put_access_token(access_rec)
         self.store.put_refresh_token(refresh_rec)
@@ -638,6 +685,8 @@ class ChainedProvider(
         token, new refresh token, old refresh token unusable. Limits
         the blast radius of a leaked refresh token to a single refresh.
         """
+        old_rec = self.store.get_refresh_token(refresh_token.token)
+        connection_name = old_rec.connection_name if old_rec is not None else None
         self.store.delete_refresh_token(refresh_token.token)
 
         now = int(time.time())
@@ -649,12 +698,14 @@ class ChainedProvider(
             client_id=client.client_id or "",
             scopes=list(scopes),
             expires_at=now + self.access_token_ttl_s,
+            connection_name=connection_name,
         )
         refresh_rec = RefreshTokenRecord(
             token=new_refresh_str,
             client_id=client.client_id or "",
             scopes=list(scopes),
             expires_at=None,
+            connection_name=connection_name,
         )
         self.store.put_access_token(access_rec)
         self.store.put_refresh_token(refresh_rec)
@@ -1125,12 +1176,17 @@ def register_oauth_consent_route(
             approved_scopes = payload.get("approved_scopes")
             if approved_scopes and isinstance(approved_scopes, list):
                 entry.params.scopes = approved_scopes
+            # Carry optional connection name chosen by the user on the panel.
+            connection_name = payload.get("connection_name")
+            if connection_name and isinstance(connection_name, str):
+                entry.connection_name = connection_name.strip() or None
             logger.info(
-                "oauth: consent approved via panel user=%s pending=%s client=%s scopes=%s",
+                "oauth: consent approved via panel user=%s pending=%s client=%s scopes=%s connection_name=%r",
                 user_email,
                 pending_id,
                 entry.client.client_id,
                 entry.params.scopes,
+                entry.connection_name,
             )
             try:
                 redirect_uri, code, state = provider.complete_authorize(pending_id)
