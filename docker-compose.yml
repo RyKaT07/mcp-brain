@@ -45,6 +45,9 @@ services:
       # Both files are created automatically on first run.
       MCP_KEY_STORE: /data/keys.json
       MCP_USAGE_STORE: /data/usage.json
+      # Bubblewrap per-user sandbox isolation. Uncomment to enable.
+      # Requires cap_add: [SYS_ADMIN] and cgroupns: host (see below).
+      # MCP_ISOLATION: bwrap
       # Todoist integration (optional). If unset, Todoist tools are not
       # registered and the server starts normally without task management.
       TODOIST_API_KEY: ${TODOIST_API_KEY:-}
@@ -71,6 +74,21 @@ services:
       # extra guard against accidental writes.
       - ./data:/data
       - ./data/auth.yaml:/data/auth.yaml:ro
+      # Per-user sandbox state (bwrap isolation). Directory is created
+      # automatically on first run; harmless when isolation is disabled.
+      - ./data/users:/data/users
+      # Unix socket directory for bwrap isolation mode.
+      # Shared between host and container so sidecars can reach the socket.
+      - /run/mcp-brain:/run/mcp-brain
+    # ── Bubblewrap isolation requirements ─────────────────────────────────
+    # cap_add: [SYS_ADMIN] is required for user-namespace creation inside
+    # the container (bwrap --unshare-user). cgroupns: host lets the sandbox
+    # delegate into real cgroup v2 slices instead of a virtual namespace.
+    # Both settings are safe with privileged: false.
+    # Comment these out if MCP_ISOLATION is not set to bwrap.
+    cap_add:
+      - SYS_ADMIN
+    cgroupns: host
     deploy:
       resources:
         limits:

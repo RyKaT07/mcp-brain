@@ -17,8 +17,9 @@ RUN python -m build --wheel --outdir /dist
 FROM python:3.12-slim AS runtime
 
 # git: knowledge auto-commit. curl: HEALTHCHECK probe.
+# bubblewrap: per-user sandbox isolation (MCP_ISOLATION=bwrap).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl tini \
+    && apt-get install -y --no-install-recommends git curl tini bubblewrap \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user — uid 1000 lines up with the most common host uid so
@@ -42,6 +43,11 @@ ENV MCP_TRANSPORT=sse \
 # Make sure git's safe.directory check doesn't trip on bind-mounted dirs
 # owned by a different uid. Single-user box, low-risk.
 RUN git config --system --add safe.directory '*'
+
+# Socket directory for bwrap Unix-socket mode (MCP_ISOLATION=bwrap).
+# Created as root, owned by mcpbrain so no runtime privilege is needed.
+RUN mkdir -p /run/mcp-brain \
+    && chown mcpbrain:mcpbrain /run/mcp-brain
 
 USER mcpbrain
 WORKDIR /home/mcpbrain
