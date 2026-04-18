@@ -40,6 +40,7 @@ from mcp_brain.tools._perms import (
     get_effective_knowledge_dir,
     meter_call,
     require,
+    require_path_within,
 )
 
 logger = logging.getLogger(__name__)
@@ -787,6 +788,12 @@ def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
         safe_scope = _SAFE_NAME_RE.sub("", file_scope)
         safe_project = _SAFE_NAME_RE.sub("", file_project)
         filepath = effective_dir / safe_scope / f"{safe_project}.md"
+
+        # Defence-in-depth: verify resolved path stays within knowledge dir
+        try:
+            require_path_within(filepath, effective_dir)
+        except PermissionDenied as e:
+            return f"Error: {e}"
 
         if not filepath.exists():
             # File was deleted — skip this question

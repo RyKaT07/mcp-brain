@@ -163,6 +163,22 @@ def get_current_user_id() -> str | None:
     return None
 
 
+def require_path_within(resolved: Path, base: Path) -> None:
+    """Raise PermissionDenied if *resolved* escapes *base* after symlink resolution.
+
+    Call this after constructing a path from user-controlled input and
+    calling ``Path.resolve()`` on it.  This is defence-in-depth: even if
+    ``_sanitize`` strips traversal characters, a symlink placed inside the
+    knowledge tree could redirect to an arbitrary location.
+    """
+    try:
+        resolved.resolve().relative_to(base.resolve())
+    except ValueError:
+        raise PermissionDenied(
+            f"path escapes allowed directory: {resolved}"
+        )
+
+
 def get_effective_knowledge_dir(base: Path) -> Path:
     """Return the knowledge dir for the active token.
 
