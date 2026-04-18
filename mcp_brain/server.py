@@ -74,6 +74,8 @@ USAGE_STORE_PATH = Path(os.getenv("MCP_USAGE_STORE", "./data/usage.json"))
 INTEGRATION_STORE_PATH = Path(os.getenv("MCP_INTEGRATION_STORE", "./data/integrations.json"))
 OAUTH_ADMIN_SECRET = os.getenv("MCP_OAUTH_ADMIN_SECRET", "")
 ADMIN_SECRET = os.getenv("MCP_ADMIN_SECRET", "")
+PANEL_URL = os.getenv("PANEL_URL", "")
+CONSENT_SIGNING_SECRET = os.getenv("CONSENT_SIGNING_SECRET", "")
 HOST = os.getenv("MCP_HOST", "0.0.0.0")
 PORT = int(os.getenv("MCP_PORT", "8400"))
 PUBLIC_URL = os.getenv("MCP_PUBLIC_URL", f"http://localhost:{PORT}/")
@@ -285,6 +287,8 @@ def _build_mcp() -> FastMCP:
             admin_secret=OAUTH_ADMIN_SECRET,
             public_url=PUBLIC_URL,
             key_store=key_store,
+            panel_url=PANEL_URL,
+            consent_signing_secret=CONSENT_SIGNING_SECRET,
         )
         resource_server_url = str(PUBLIC_URL).rstrip("/") + "/mcp"
         mcp = FastMCP(

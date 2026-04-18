@@ -34,7 +34,13 @@ services:
       # the server still runs but the OAuth flow fails at the consent
       # step; static yaml bearer tokens keep working for Claude Code CLI.
       MCP_OAUTH_STORE: /data/oauth-state.json
-      MCP_OAUTH_ADMIN_SECRET: ${MCP_OAUTH_ADMIN_SECRET:?MCP_OAUTH_ADMIN_SECRET must be set in .env — generate via openssl rand -hex 32}
+      MCP_OAUTH_ADMIN_SECRET: ${MCP_OAUTH_ADMIN_SECRET:-}
+      # Panel-based OAuth consent (recommended). When set, the consent
+      # page redirects to the panel login instead of asking for an admin
+      # secret. Both must be set together. Generate the signing secret
+      # with: openssl rand -hex 32
+      PANEL_URL: ${PANEL_URL:-}
+      CONSENT_SIGNING_SECRET: ${CONSENT_SIGNING_SECRET:-}
       # Dynamic API key store and usage metering (multi-user support).
       # Both files are created automatically on first run.
       MCP_KEY_STORE: /data/keys.json

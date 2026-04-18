@@ -357,6 +357,8 @@ class ChainedProvider(
         public_url: str,
         access_token_ttl_s: int = ACCESS_TOKEN_TTL_S,
         key_store: "KeyStore | None" = None,
+        panel_url: str = "",
+        consent_signing_secret: str = "",
     ):
         self.store = OAuthStore(store_path)
         self.yaml_verifier = yaml_verifier
@@ -366,6 +368,8 @@ class ChainedProvider(
         self.pending = PendingConsentStore()
         self.auth_codes = AuthorizationCodeStore()
         self.key_store = key_store  # dynamic API key store (may be None)
+        self.panel_url = panel_url.rstrip("/") if panel_url else ""
+        self.consent_signing_secret = consent_signing_secret
 
     # ------------------------------------------------------------------ the chain
 
@@ -848,33 +852,98 @@ def _render_consent_html(
 </html>"""
 
 
+def _verify_consent_token(token: str, signing_secret: str) -> dict | None:
+    """Verify and decode a panel-signed consent JWT (HS256).
+
+    Returns the decoded payload dict on success, or None on any failure
+    (bad signature, expired, malformed).  Uses only stdlib so we don't
+    need a PyJWT dependency for this single use case.
+    """
+    import base64
+    import hashlib
+
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+
+    def _b64decode(s: str) -> bytes:
+        # JWT base64url → standard base64
+        s = s.replace("-", "+").replace("_", "/")
+        s += "=" * (-len(s) % 4)
+        return base64.b64decode(s)
+
+    try:
+        header = json.loads(_b64decode(parts[0]))
+    except Exception:
+        return None
+    if header.get("alg") != "HS256":
+        return None
+
+    # Verify HMAC-SHA256 signature (constant-time via hmac.compare_digest)
+    signing_input = f"{parts[0]}.{parts[1]}".encode("ascii")
+    expected_sig = hmac.new(
+        signing_secret.encode("utf-8"),
+        signing_input,
+        hashlib.sha256,
+    ).digest()
+    try:
+        actual_sig = _b64decode(parts[2])
+    except Exception:
+        return None
+
+    if not hmac.compare_digest(expected_sig, actual_sig):
+        return None
+
+    try:
+        payload = json.loads(_b64decode(parts[1]))
+    except Exception:
+        return None
+
+    # Check expiration
+    exp = payload.get("exp")
+    if exp is not None and time.time() > exp:
+        return None
+
+    return payload
+
+
 def register_oauth_consent_route(
     mcp: "FastMCP",
     provider: ChainedProvider,
 ) -> None:
-    """Register GET + POST /oauth/consent on the FastMCP instance.
+    """Register OAuth consent routes on the FastMCP instance.
 
-    The consent page is NOT protected by bearer auth — OAuth clients
-    cannot attach one at this stage of the flow, and that is the whole
-    point of the page.  Security comes from the admin_secret field in
-    the POSTed form, which must match ``MCP_OAUTH_ADMIN_SECRET``
-    (checked with ``hmac.compare_digest`` for constant-time comparison).
+    Two consent modes are supported:
 
-    If the server starts without an admin secret configured, GET and
-    POST both return 503 with a clear explanation.
+    1. **Panel-based** (preferred): when ``PANEL_URL`` and
+       ``CONSENT_SIGNING_SECRET`` are configured, the consent page
+       redirects to the panel's ``/oauth/brain-consent`` endpoint.
+       The panel authenticates the user via its own session system,
+       shows a consent screen, and redirects back with a signed JWT
+       consent token that mcp-brain verifies.
+
+    2. **Admin-secret** (legacy fallback): when only
+       ``MCP_OAUTH_ADMIN_SECRET`` is set, the old inline consent form
+       is shown.  This is kept for self-hosted users who do not run the
+       panel alongside mcp-brain.
+
+    If neither is configured, GET and POST return 503.
     """
+    from urllib.parse import quote, urlencode
+
     from starlette.requests import Request
     from starlette.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
     @mcp.custom_route("/oauth/consent", methods=["GET", "POST"])
     async def consent(request: Request):
-        # If admin hasn't set the secret in env, fail loudly. Server
-        # still boots and yaml bearer auth still works — this only
-        # blocks the OAuth consent step.
-        if not provider.admin_secret:
+        has_panel = bool(provider.panel_url and provider.consent_signing_secret)
+        has_admin_secret = bool(provider.admin_secret)
+
+        if not has_panel and not has_admin_secret:
             return PlainTextResponse(
-                "OAuth flow is not configured on this server. The "
-                "operator must set MCP_OAUTH_ADMIN_SECRET and restart.",
+                "OAuth flow is not configured on this server. Set "
+                "PANEL_URL + CONSENT_SIGNING_SECRET (recommended) or "
+                "MCP_OAUTH_ADMIN_SECRET (legacy) and restart.",
                 status_code=503,
             )
 
@@ -887,6 +956,26 @@ def register_oauth_consent_route(
                     "connection flow again from your client.",
                     status_code=404,
                 )
+
+            # Panel-based flow: redirect to panel consent page
+            if has_panel:
+                callback = f"{provider.public_url}oauth/consent-callback"
+                params = urlencode({
+                    "pending": pending_id,
+                    "client_name": entry.client.client_name or "",
+                    "client_id": entry.client.client_id or "",
+                    "scopes": " ".join(entry.params.scopes or ["*"]),
+                    "callback": callback,
+                })
+                panel_consent_url = f"{provider.panel_url}/oauth/brain-consent?{params}"
+                logger.info(
+                    "oauth: redirecting to panel consent pending=%s client=%s",
+                    pending_id,
+                    entry.client.client_id,
+                )
+                return RedirectResponse(url=panel_consent_url, status_code=302)
+
+            # Legacy admin-secret form
             return HTMLResponse(
                 _render_consent_html(
                     client_name=entry.client.client_name or "",
@@ -896,7 +985,13 @@ def register_oauth_consent_route(
                 )
             )
 
-        # POST
+        # POST — legacy admin-secret flow only
+        if not has_admin_secret:
+            return PlainTextResponse(
+                "Admin-secret consent is not configured. Use panel-based flow.",
+                status_code=503,
+            )
+
         form = await request.form()
         pending_id = str(form.get("pending", ""))
         action = str(form.get("action", "authorize"))
@@ -950,3 +1045,101 @@ def register_oauth_consent_route(
 
         url = construct_redirect_uri(redirect_uri, code=code, state=state)
         return RedirectResponse(url=url, status_code=302)
+
+    # ------------------------------------------------------------------ callback
+    # Panel redirects back here after the user approves/denies on the
+    # panel's consent page.  The consent decision is encoded in a signed
+    # JWT (HS256) in the ``consent_token`` query parameter.
+
+    @mcp.custom_route("/oauth/consent-callback", methods=["GET"])
+    async def consent_callback(request: Request):
+        if not provider.consent_signing_secret:
+            return PlainTextResponse(
+                "Panel-based consent is not configured.",
+                status_code=503,
+            )
+
+        token = request.query_params.get("consent_token", "")
+        pending_id = request.query_params.get("pending", "")
+
+        if not token or not pending_id:
+            return PlainTextResponse(
+                "Missing consent_token or pending parameter.",
+                status_code=400,
+            )
+
+        # Verify the JWT from the panel
+        payload = _verify_consent_token(token, provider.consent_signing_secret)
+        if payload is None:
+            logger.warning(
+                "oauth: consent-callback invalid token pending=%s",
+                pending_id,
+            )
+            return PlainTextResponse(
+                "Invalid or expired consent token.",
+                status_code=401,
+            )
+
+        # Ensure the pending_id in the JWT matches the query param
+        if payload.get("pending_id") != pending_id:
+            logger.warning(
+                "oauth: consent-callback pending_id mismatch jwt=%s query=%s",
+                payload.get("pending_id"),
+                pending_id,
+            )
+            return PlainTextResponse(
+                "Consent token pending_id mismatch.",
+                status_code=400,
+            )
+
+        entry = provider.pending.get(pending_id)
+        if entry is None:
+            return PlainTextResponse(
+                "Consent request not found or expired.",
+                status_code=404,
+            )
+
+        action = payload.get("action", "")
+        user_email = payload.get("user_email", "unknown")
+
+        if action == "deny":
+            logger.info(
+                "oauth: consent denied via panel user=%s pending=%s client=%s",
+                user_email,
+                pending_id,
+                entry.client.client_id,
+            )
+            try:
+                redirect_uri, state = provider.deny_authorize(pending_id)
+            except ValueError as exc:
+                return PlainTextResponse(str(exc), status_code=404)
+            url = construct_redirect_uri(
+                redirect_uri,
+                error="access_denied",
+                state=state,
+            )
+            return RedirectResponse(url=url, status_code=302)
+
+        if action == "approve":
+            # If the panel sent user-selected scopes, narrow the grant.
+            approved_scopes = payload.get("approved_scopes")
+            if approved_scopes and isinstance(approved_scopes, list):
+                entry.params.scopes = approved_scopes
+            logger.info(
+                "oauth: consent approved via panel user=%s pending=%s client=%s scopes=%s",
+                user_email,
+                pending_id,
+                entry.client.client_id,
+                entry.params.scopes,
+            )
+            try:
+                redirect_uri, code, state = provider.complete_authorize(pending_id)
+            except ValueError as exc:
+                return PlainTextResponse(str(exc), status_code=404)
+            url = construct_redirect_uri(redirect_uri, code=code, state=state)
+            return RedirectResponse(url=url, status_code=302)
+
+        return PlainTextResponse(
+            f"Unknown consent action: {action}",
+            status_code=400,
+        )
