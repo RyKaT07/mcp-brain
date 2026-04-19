@@ -53,7 +53,17 @@ def _build_worker_mcp():
     from mcp_brain.tools.search import register_search_tools
     from mcp_brain.tools.wake import register_wake_tools
 
-    mcp = FastMCP("mcp-brain-worker")
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    mcp = FastMCP(
+        "mcp-brain-worker",
+        transport_security=TransportSecuritySettings(
+            # Worker listens on a Unix domain socket behind the isolation
+            # manager — no network exposure.  Disable DNS rebinding
+            # protection so the proxy's Host: header isn't rejected.
+            enable_dns_rebinding_protection=False,
+        ),
+    )
 
     # No auth in worker — sandbox is the boundary.  Configure _perms with
     # no verifier/keystore so all scopes fall back to god-mode (["*"]).
