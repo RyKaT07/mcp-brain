@@ -222,6 +222,78 @@ Data (bind-mounted volumes):
 
 ---
 
+## Deployment architecture (hosted / multi-user)
+
+When BrainVlt runs as a hosted service (brainvlt.com), three components work together:
+
+```
+                       ┌────────────────────────────────────────────┐
+                       │          Cloudflare Tunnel (cloudflared)   │
+                       │  Routes public domains to local services   │
+                       └──────┬─────────────────┬──────────────────┘
+                              │                 │
+                    panel.domain.tld     brain-{user}.domain.tld
+                              │                 │
+                              ▼                 ▼
+                     ┌──────────────┐   ┌──────────────┐
+                     │    Panel     │   │    Brain      │
+                     │  (Next.js)   │   │  (Python MCP) │
+                     │              │   │               │
+                     │ • User auth  │   │ • Knowledge   │
+                     │ • Billing    │   │ • MCP tools   │
+                     │ • Brain mgmt │   │ • OAuth 2.1   │
+                     │ • Credential │   │ • Integrations│
+                     │   storage    │   │               │
+                     └──────┬───────┘   └───────────────┘
+                            │  provisions & manages
+                            ▼
+                     Docker containers
+                     (one brain per user)
+```
+
+### Component roles
+
+- **Panel** — Next.js web application. Handles user registration, billing, and brain instance lifecycle. Provisions a Docker container per user. Stores integration credentials (encrypted) and proxies them to brain instances at runtime.
+- **Brain** — Python MCP server (this repo). Each user gets their own container with isolated knowledge, auth tokens, and integrations. Serves the MCP endpoint that AI clients connect to.
+- **Cloudflare Tunnel** — A single `cloudflared` daemon routes public domains to the panel and to each user's brain container. No ports are exposed directly to the internet.
+
+### OAuth consent flow (claude.ai → brain)
+
+When a user connects their brain from claude.ai via Custom Connectors:
+
+```
+Claude (web/mobile)
+  │
+  │ 1. Discovers OAuth metadata at brain's /.well-known/oauth-authorization-server
+  │
+  │ 2. Redirects user to brain's /oauth/authorize
+  │
+  ▼
+Brain (OAuth 2.1 server)
+  │
+  │ 3. Brain redirects to Panel login page for user authentication
+  │
+  ▼
+Panel (login + consent)
+  │
+  │ 4. User authenticates with Panel credentials
+  │ 5. Panel issues a consent callback to Brain
+  │
+  ▼
+Brain
+  │
+  │ 6. Brain issues access + refresh tokens
+  │ 7. Redirects back to Claude with authorization code
+  │
+  ▼
+Claude
+    8. Exchanges code for tokens → connected
+```
+
+Integration credentials (Todoist, Google Calendar, Trello, etc.) are stored in the Panel database and injected into brain containers as environment variables at startup.
+
+---
+
 ## Development (local, without Docker)
 
 ```bash

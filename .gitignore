@@ -29,7 +29,9 @@ data/oauth-state.json
 # The project-level CLAUDE.md contains references to the maintainer's
 # workflow and other private notes; the public-facing equivalent is
 # README.md + docs/.
-CLAUDE.md
+# Agent config files (case-insensitive)
+[Cc][Ll][Aa][Uu][Dd][Ee].[Mm][Dd]
+[Aa][Gg][Ee][Nn][Tt]*.[Mm][Dd]
 
 # Lock files from knowledge writes
 *.lock
