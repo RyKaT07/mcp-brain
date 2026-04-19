@@ -24,7 +24,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_CGROUP_ROOT = Path(os.getenv("MCP_CGROUP_ROOT", "/sys/fs/cgroup/mcp-brain"))
+_CGROUP_ROOT = Path(os.getenv("MCP_CGROUP_ROOT", "/run/cgroup/mcp-brain"))
 
 
 def _cgroup_path(user_id: str) -> Path:
