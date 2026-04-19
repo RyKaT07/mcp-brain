@@ -22,6 +22,7 @@ Usage (from bwrap command line):
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -38,6 +39,8 @@ def _build_worker_mcp():
     """Build and configure the FastMCP instance for the sandboxed worker.
 
     No auth is wired in — the bwrap sandbox enforces isolation.
+    Indexes are built asynchronously after the server starts so the socket
+    appears immediately and the manager doesn't time out.
     """
     from mcp.server.fastmcp import FastMCP
 
@@ -74,11 +77,9 @@ def _build_worker_mcp():
     KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Create empty indexes — they'll be populated async after server starts.
     search_index = SearchIndex()
-    search_index.build(KNOWLEDGE_DIR)
-
     rel_graph = RelationshipGraph()
-    rel_graph.build(KNOWLEDGE_DIR)
 
     register_knowledge_tools(mcp, KNOWLEDGE_DIR, search_index=search_index, rel_graph=rel_graph)
     register_maintain_tools(mcp, KNOWLEDGE_DIR)
@@ -117,7 +118,7 @@ def _build_worker_mcp():
     # brain_wake registered last so its inventory snapshot is complete.
     register_wake_tools(mcp, KNOWLEDGE_DIR)
 
-    return mcp
+    return mcp, search_index, rel_graph
 
 
 def main() -> None:
@@ -137,7 +138,7 @@ def main() -> None:
 
     socket_path: Path = args.socket
 
-    mcp = _build_worker_mcp()
+    mcp, search_index, rel_graph = _build_worker_mcp()
 
     # Build ASGI app with Streamable HTTP transport (same pattern as
     # server.py) and serve via uvicorn on a Unix domain socket.
@@ -148,12 +149,32 @@ def main() -> None:
 
     inner = mcp.streamable_http_app()
 
+    _index_ready = asyncio.Event()
+
+    async def _build_indexes_background():
+        """Build search and graph indexes in a background thread after server starts."""
+        loop = asyncio.get_running_loop()
+        logger.info("worker: building indexes in background...")
+        try:
+            await loop.run_in_executor(None, search_index.build, KNOWLEDGE_DIR)
+            await loop.run_in_executor(None, rel_graph.build, KNOWLEDGE_DIR)
+            logger.info("worker: indexes ready")
+        except Exception:
+            logger.exception("worker: index build failed")
+        finally:
+            _index_ready.set()
+
     async def healthz(_request: Request) -> JSONResponse:
-        return JSONResponse({"status": "ok"})
+        return JSONResponse({
+            "status": "ok",
+            "indexes_ready": _index_ready.is_set(),
+        })
 
     @asynccontextmanager
     async def lifespan(_app):
         async with mcp.session_manager.run():
+            # Start index build as a background task — server is already listening.
+            asyncio.create_task(_build_indexes_background(), name="index-build")
             yield
 
     app = Starlette(

@@ -378,27 +378,48 @@ class RelationshipGraph:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _git_file_timestamp(knowledge_dir: Path, md_file: Path) -> str | None:
-        """Return the ISO 8601 last-commit timestamp for a file, or None."""
+    def _git_file_timestamps(knowledge_dir: Path, md_files: list[Path]) -> dict[Path, str]:
+        """Return {file_path: ISO 8601 timestamp} for all files in one git call."""
+        if not md_files:
+            return {}
         try:
+            # Single git log call: for each file, output the path and its last commit date.
+            # --name-only + --format gives us commit date followed by the filename.
             result = subprocess.run(
-                ["git", "log", "-1", "--format=%aI", "--", str(md_file)],
+                ["git", "log", "--all", "--format=%aI", "--name-only", "--diff-filter=ACDMR", "--"]
+                + [str(f) for f in md_files],
                 cwd=knowledge_dir,
                 capture_output=True,
                 text=True,
-                timeout=5,
+                timeout=30,
             )
-            ts = result.stdout.strip()
-            return ts if ts else None
+            # Parse output: alternating timestamp lines and filename lines.
+            # We only need the FIRST (most recent) timestamp per file.
+            timestamps: dict[Path, str] = {}
+            current_ts: str | None = None
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                # ISO 8601 timestamps start with a digit (year)
+                if line[0].isdigit() and "T" in line:
+                    current_ts = line
+                elif current_ts is not None:
+                    fpath = knowledge_dir / line
+                    if fpath not in timestamps:
+                        timestamps[fpath] = current_ts
+            return timestamps
         except Exception:
-            return None
+            logger.warning("graph.build: batch git log failed, timestamps unavailable")
+            return {}
 
     def build(self, knowledge_dir: Path) -> None:
         """Scan all knowledge/{scope}/{project}.md files and build the graph."""
         t0 = time.monotonic()
         file_count = 0
 
-        file_data: list[tuple[str, str, str, str | None]] = []
+        # Collect all files first, then batch the git timestamp lookup.
+        file_entries: list[tuple[str, str, str, Path]] = []
 
         for scope_dir in knowledge_dir.iterdir():
             if not scope_dir.is_dir():
@@ -414,9 +435,18 @@ class RelationshipGraph:
                 except Exception:
                     logger.warning("graph.build: could not read %s", md_file)
                     continue
-                observed_at = self._git_file_timestamp(knowledge_dir, md_file)
-                file_data.append((scope, project, content, observed_at))
+                file_entries.append((scope, project, content, md_file))
                 file_count += 1
+
+        # One git call for all files instead of N subprocess calls.
+        timestamps = self._git_file_timestamps(
+            knowledge_dir, [entry[3] for entry in file_entries]
+        )
+
+        file_data: list[tuple[str, str, str, str | None]] = [
+            (scope, project, content, timestamps.get(md_file))
+            for scope, project, content, md_file in file_entries
+        ]
 
         with self._lock:
             self._conn.execute("DELETE FROM relationships")

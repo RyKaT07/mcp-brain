@@ -33,7 +33,8 @@ from mcp_brain.isolation.cgroups import cleanup_cgroup, setup_cgroup
 logger = logging.getLogger(__name__)
 
 # How long (seconds) to wait for a worker's socket to appear after spawn.
-_SOCKET_READY_TIMEOUT = 10.0
+# Index building happens async now, but leave headroom for large knowledge bases.
+_SOCKET_READY_TIMEOUT = 60.0
 # Poll interval when waiting for socket.
 _SOCKET_POLL_INTERVAL = 0.05
 # Grace period (seconds) between SIGTERM and SIGKILL during shutdown.
