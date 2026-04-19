@@ -10,9 +10,9 @@ differences from the main server (server.py):
 - Listens on a Unix domain socket (path from --socket CLI arg).
 - Knowledge dir is fixed at /data/knowledge (bwrap-mounted).
 - State dir is fixed at /data/state (search index + relationship graph).
-- Only knowledge / maintain / briefing tools are registered.  Integration
-  tools (Todoist, Trello, etc.) are NOT included — this worker is for
-  per-user personal memory only.
+- Knowledge, maintain, briefing AND integration tools are registered.
+  Integration tools (Todoist, Trello, etc.) are conditionally loaded
+  based on env vars inherited from the parent container.
 - No OAuth, no admin routes, no CSP middleware.
 
 Usage (from bwrap command line):
@@ -87,6 +87,33 @@ def _build_worker_mcp():
     register_briefing_tools(mcp, KNOWLEDGE_DIR)
     register_search_tools(mcp, KNOWLEDGE_DIR, search_index)
     register_graph_tools(mcp, KNOWLEDGE_DIR, rel_graph)
+
+    # ── Integration tools (conditional on env vars) ────────────────────────
+    todoist_key = os.getenv("TODOIST_API_KEY", "")
+    if todoist_key:
+        from mcp_brain.tools.todoist import register_todoist_tools
+        register_todoist_tools(mcp, todoist_key)
+
+    trello_key = os.getenv("TRELLO_API_KEY", "")
+    trello_token = os.getenv("TRELLO_API_TOKEN", "")
+    if trello_key and trello_token:
+        from mcp_brain.tools.trello import register_trello_tools
+        register_trello_tools(mcp, trello_key, trello_token)
+
+    nc_url = os.getenv("NEXTCLOUD_URL", "")
+    nc_user = os.getenv("NEXTCLOUD_USER", "")
+    nc_pass = os.getenv("NEXTCLOUD_PASSWORD", "")
+    if nc_url and nc_user and nc_pass:
+        from mcp_brain.tools.nextcloud import register_nextcloud_tools
+        register_nextcloud_tools(mcp, nc_url, nc_user, nc_pass)
+
+    gcal_client = os.getenv("GOOGLE_CLIENT_ID", "")
+    gcal_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
+    gcal_refresh = os.getenv("GOOGLE_REFRESH_TOKEN", "")
+    if gcal_client and gcal_secret and gcal_refresh:
+        from mcp_brain.tools.gcal import register_gcal_tools
+        register_gcal_tools(mcp, gcal_client, gcal_secret, gcal_refresh)
+
     # brain_wake registered last so its inventory snapshot is complete.
     register_wake_tools(mcp, KNOWLEDGE_DIR)
 
