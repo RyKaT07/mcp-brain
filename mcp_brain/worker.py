@@ -77,9 +77,11 @@ def _build_worker_mcp():
     KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Create empty indexes — they'll be populated async after server starts.
-    search_index = SearchIndex()
-    rel_graph = RelationshipGraph()
+    # Create indexes backed by files in STATE_DIR so they persist across
+    # worker restarts and idle evictions.  build() will skip the rebuild
+    # if the knowledge directory hasn't changed (fingerprint match).
+    search_index = SearchIndex(db_path=STATE_DIR / "search.db")
+    rel_graph = RelationshipGraph(db_path=STATE_DIR / "graph.db")
 
     register_knowledge_tools(mcp, KNOWLEDGE_DIR, search_index=search_index, rel_graph=rel_graph)
     register_maintain_tools(mcp, KNOWLEDGE_DIR)

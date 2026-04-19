@@ -1,12 +1,19 @@
-"""Relationship graph backed by SQLite (in-memory).
+"""Relationship graph backed by SQLite.
 
 Extracts entity relationships from knowledge markdown files and stores
-them in an in-memory SQLite database for graph traversal queries.
+them in a SQLite database for graph traversal queries.
+
+When a ``db_path`` is provided the database is persisted to disk so it
+survives worker restarts.  A fingerprint of the knowledge directory is
+stored in a metadata table; ``build()`` skips the rebuild when the
+fingerprint matches.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import re
 import sqlite3
 import subprocess
@@ -18,6 +25,21 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _SKIP_DIRS = {"_meta", "inbox", ".git", "users"}
+
+
+def _knowledge_fingerprint(knowledge_dir: Path) -> str:
+    """Compute a fast fingerprint of all knowledge markdown files."""
+    entries: list[str] = []
+    for scope_dir in sorted(knowledge_dir.iterdir()):
+        if not scope_dir.is_dir() or scope_dir.name in _SKIP_DIRS:
+            continue
+        for md_file in sorted(scope_dir.glob("*.md")):
+            try:
+                st = md_file.stat()
+                entries.append(f"{md_file.relative_to(knowledge_dir)}:{st.st_mtime_ns}:{st.st_size}")
+            except OSError:
+                continue
+    return hashlib.sha256("\n".join(entries).encode()).hexdigest()
 
 # Regex patterns for entity extraction
 _RE_WIKILINK = re.compile(r"\[\[([^\]]+)\]\]")
@@ -182,11 +204,19 @@ def _extract_entities_and_rels(
 
 
 class RelationshipGraph:
-    """In-memory SQLite relationship graph over knowledge markdown files."""
+    """SQLite relationship graph over knowledge markdown files.
 
-    def __init__(self) -> None:
+    When *db_path* is provided the database is stored on disk and
+    ``build()`` skips re-indexing if the knowledge directory hasn't
+    changed (fingerprint match).
+    """
+
+    def __init__(self, db_path: Path | None = None) -> None:
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self._db_path = db_path
+        db_uri = str(db_path) if db_path else ":memory:"
+        self._conn = sqlite3.connect(db_uri, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
 
@@ -198,6 +228,11 @@ class RelationshipGraph:
     def _init_schema(self) -> None:
         self._conn.executescript(
             """
+            CREATE TABLE IF NOT EXISTS _meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS entities (
                 id      INTEGER PRIMARY KEY AUTOINCREMENT,
                 name    TEXT NOT NULL,
@@ -414,7 +449,25 @@ class RelationshipGraph:
             return {}
 
     def build(self, knowledge_dir: Path) -> None:
-        """Scan all knowledge/{scope}/{project}.md files and build the graph."""
+        """Scan all knowledge/{scope}/{project}.md files and build the graph.
+
+        When using a file-backed DB, skips the rebuild if the knowledge
+        directory fingerprint hasn't changed since the last build.
+        """
+        fingerprint = _knowledge_fingerprint(knowledge_dir)
+
+        # Check cached fingerprint — skip rebuild if unchanged.
+        # Only meaningful for file-backed DBs; in-memory always rebuilds.
+        if self._db_path is not None:
+            with self._lock:
+                cur = self._conn.execute(
+                    "SELECT value FROM _meta WHERE key = 'fingerprint'"
+                )
+                row = cur.fetchone()
+                if row and row[0] == fingerprint:
+                    logger.info("graph.build: cache hit — skipping rebuild")
+                    return
+
         t0 = time.monotonic()
         file_count = 0
 
@@ -453,6 +506,10 @@ class RelationshipGraph:
             self._conn.execute("DELETE FROM entities")
             for scope, project, content, observed_at in file_data:
                 self._index_file(scope, project, content, observed_at=observed_at)
+            self._conn.execute(
+                "INSERT OR REPLACE INTO _meta(key, value) VALUES ('fingerprint', ?)",
+                (fingerprint,),
+            )
             self._conn.commit()
 
         elapsed = time.monotonic() - t0

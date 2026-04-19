@@ -1,13 +1,20 @@
-"""Full-text search index backed by SQLite FTS5 (in-memory).
+"""Full-text search index backed by SQLite FTS5.
 
 Indexes knowledge markdown files split by H2 sections, plus Todoist tasks
 and Trello cards when API keys are available. Allows BM25-ranked queries
 scoped to allowed knowledge scopes, with optional source filtering.
+
+When a ``db_path`` is provided the index is persisted to disk so it
+survives worker restarts.  A fingerprint of the knowledge directory
+(file paths + mtimes) is stored in a metadata table; ``build()`` skips
+the rebuild when the fingerprint matches.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -16,6 +23,24 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _SKIP_DIRS = {"_meta", "inbox", ".git", "users"}
+
+
+def _knowledge_fingerprint(knowledge_dir: Path) -> str:
+    """Compute a fast fingerprint of all knowledge markdown files.
+
+    Uses sorted (relative path, mtime, size) tuples hashed with SHA-256.
+    """
+    entries: list[str] = []
+    for scope_dir in sorted(knowledge_dir.iterdir()):
+        if not scope_dir.is_dir() or scope_dir.name in _SKIP_DIRS:
+            continue
+        for md_file in sorted(scope_dir.glob("*.md")):
+            try:
+                st = md_file.stat()
+                entries.append(f"{md_file.relative_to(knowledge_dir)}:{st.st_mtime_ns}:{st.st_size}")
+            except OSError:
+                continue
+    return hashlib.sha256("\n".join(entries).encode()).hexdigest()
 
 
 def _parse_sections(content: str) -> dict[str, str]:
@@ -37,14 +62,30 @@ def _parse_sections(content: str) -> dict[str, str]:
 
 
 class SearchIndex:
-    """In-memory SQLite FTS5 index over knowledge markdown files and tasks."""
+    """SQLite FTS5 index over knowledge markdown files and tasks.
 
-    def __init__(self) -> None:
+    When *db_path* is provided the database is stored on disk and
+    ``build()`` skips re-indexing if the knowledge directory hasn't
+    changed (fingerprint match).
+    """
+
+    def __init__(self, db_path: Path | None = None) -> None:
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self._db_path = db_path
+        db_uri = str(db_path) if db_path else ":memory:"
+        self._conn = sqlite3.connect(db_uri, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(
             """
-            CREATE VIRTUAL TABLE knowledge_fts USING fts5(
+            CREATE TABLE IF NOT EXISTS _meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
                 scope, project, section, content, source,
                 tokenize = "porter unicode61"
             )
@@ -106,7 +147,24 @@ class SearchIndex:
 
         Only clears and re-indexes knowledge entries; task entries
         (source=todoist/trello) are preserved across rebuilds.
+
+        When using a file-backed DB, skips the rebuild if the knowledge
+        directory fingerprint hasn't changed since the last build.
         """
+        fingerprint = _knowledge_fingerprint(knowledge_dir)
+
+        # Check cached fingerprint — skip rebuild if unchanged.
+        # Only meaningful for file-backed DBs; in-memory always rebuilds.
+        if self._db_path is not None:
+            with self._lock:
+                cur = self._conn.execute(
+                    "SELECT value FROM _meta WHERE key = 'fingerprint'"
+                )
+                row = cur.fetchone()
+                if row and row[0] == fingerprint:
+                    logger.info("search.build: cache hit — skipping rebuild")
+                    return
+
         t0 = time.monotonic()
         file_count = 0
         section_count = 0
@@ -145,6 +203,10 @@ class SearchIndex:
                     "INSERT INTO knowledge_fts(scope, project, section, content, source) VALUES (?, ?, ?, ?, ?)",
                     rows,
                 )
+            self._conn.execute(
+                "INSERT OR REPLACE INTO _meta(key, value) VALUES ('fingerprint', ?)",
+                (fingerprint,),
+            )
             self._conn.commit()
 
         elapsed = time.monotonic() - t0
