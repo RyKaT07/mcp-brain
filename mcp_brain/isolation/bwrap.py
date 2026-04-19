@@ -9,14 +9,28 @@ Sandbox design:
 - Read-only bind for system paths: /usr, /lib, /lib64, /etc/resolv.conf, /etc/ssl
 - Read-write bind for user knowledge dir → /data/knowledge inside sandbox
 - Read-write bind for user state dir   → /data/state   inside sandbox
-- Ephemeral /tmp, /dev, /proc
+- Ephemeral /tmp, /dev, /proc (when running on bare metal)
 - PID namespace unshared, process dies with parent (--die-with-parent)
 - Unix socket path is passed as --socket arg to the worker module
+
+When running inside a Docker container, --proc and --unshare-pid are
+skipped because the kernel blocks nested namespace creation even with
+CAP_SYS_ADMIN.  The Docker container itself provides the outer isolation;
+bwrap adds filesystem-level per-user separation within it.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+
+def _inside_container() -> bool:
+    """Detect whether we're running inside a Docker/OCI container."""
+    return (
+        os.path.isfile("/.dockerenv")
+        or os.environ.get("container") == "docker"
+    )
 
 
 def build_bwrap_cmd(
@@ -51,6 +65,8 @@ def build_bwrap_cmd(
     user_state.mkdir(parents=True, exist_ok=True)
     socket_dir.mkdir(parents=True, exist_ok=True)
 
+    in_container = _inside_container()
+
     cmd: list[str] = [
         "bwrap",
         # ── System read-only mounts ─────────────────────────────────────────
@@ -64,12 +80,20 @@ def build_bwrap_cmd(
         "--bind", str(user_state), "/data/state",
         # ── Socket directory (read-write, needed to create the socket) ──────
         "--bind", str(socket_dir), str(socket_dir),
-        # ── Ephemeral / virtual filesystems ────────────────────────────────
+        # ── Ephemeral filesystem ───────────────────────────────────────────
         "--tmpfs", "/tmp",
         "--dev", "/dev",
-        "--proc", "/proc",
-        # ── Namespace isolation ─────────────────────────────────────────────
-        "--unshare-pid",
+    ]
+
+    if not in_container:
+        # Full namespace isolation on bare metal / VM.
+        cmd += ["--proc", "/proc", "--unshare-pid"]
+    else:
+        # Inside Docker: bind the host /proc read-only instead of creating
+        # a new one (kernel blocks nested procfs mounts).
+        cmd += ["--ro-bind", "/proc", "/proc"]
+
+    cmd += [
         "--die-with-parent",
         # ── Worker process ──────────────────────────────────────────────────
         "python3", "-m", worker_module,

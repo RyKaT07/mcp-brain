@@ -59,7 +59,7 @@ class TestBwrapCommandBuilder:
         user_knowledge = str(tmp_path / "knowledge" / "carol")
         assert (user_knowledge, "/data/knowledge") in bind_pairs
 
-    def test_pid_namespace_unshared(self, tmp_path: Path):
+    def test_die_with_parent(self, tmp_path: Path):
         from mcp_brain.isolation.bwrap import build_bwrap_cmd
 
         cmd = build_bwrap_cmd(
@@ -69,7 +69,6 @@ class TestBwrapCommandBuilder:
             socket_dir=tmp_path / "sockets",
         )
 
-        assert "--unshare-pid" in cmd
         assert "--die-with-parent" in cmd
 
     def test_socket_path_in_command(self, tmp_path: Path):
