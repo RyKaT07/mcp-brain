@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 _SKIP_DIRS = {"_meta", "inbox", ".git", "users"}
 
+# Bump this whenever the entity/relationship extraction code changes in a way
+# that makes previously-persisted rows incorrect or inconsistent.  On mismatch
+# the on-disk DB is wiped and rebuilt on the next build() call.  Fingerprint
+# alone cannot detect code changes (only file mtimes), so this counter is the
+# escape hatch.
+_SCHEMA_VERSION = "1"
+
 
 def _knowledge_fingerprint(knowledge_dir: Path) -> str:
     """Compute a fast fingerprint of all knowledge markdown files."""
@@ -219,11 +226,40 @@ class RelationshipGraph:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
+        self._enforce_schema_version()
 
         # Per-user graphs: user_id → RelationshipGraph (leaf instances, not recursive).
         # Created lazily on first write or explicit build_user() call.
         self._user_graphs: dict[str, "RelationshipGraph"] = {}
         self._user_graphs_lock = threading.Lock()
+
+    def _enforce_schema_version(self) -> None:
+        """Wipe persisted rows if the on-disk schema version is out of date.
+
+        Relationships and entities are cleared (so the next ``build()`` does
+        a full rebuild from the knowledge directory) and the current
+        ``_SCHEMA_VERSION`` is recorded.  The fingerprint is also cleared so
+        ``build()`` doesn't short-circuit on a stale match.
+        """
+        cur = self._conn.execute("SELECT value FROM _meta WHERE key = 'schema_version'")
+        row = cur.fetchone()
+        stored = row[0] if row else None
+        if stored == _SCHEMA_VERSION:
+            return
+        if stored is not None:
+            logger.info(
+                "graph: schema version %s → %s, rebuilding index",
+                stored,
+                _SCHEMA_VERSION,
+            )
+        self._conn.execute("DELETE FROM relationships")
+        self._conn.execute("DELETE FROM entities")
+        self._conn.execute("DELETE FROM _meta WHERE key = 'fingerprint'")
+        self._conn.execute(
+            "INSERT OR REPLACE INTO _meta(key, value) VALUES ('schema_version', ?)",
+            (_SCHEMA_VERSION,),
+        )
+        self._conn.commit()
 
     def _init_schema(self) -> None:
         self._conn.executescript(

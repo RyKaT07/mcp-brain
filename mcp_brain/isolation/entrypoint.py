@@ -56,6 +56,11 @@ HOST = os.getenv("MCP_HOST", "0.0.0.0")
 PORT = int(os.getenv("MCP_PORT", "8400"))
 IDLE_TIMEOUT = int(os.getenv("MCP_IDLE_TIMEOUT", "600"))
 
+# Static bearer token required on ``/admin/*`` endpoints.  When unset the admin
+# surface is disabled (fail-closed) — useful in stdio / self-hosted single-user
+# setups where no panel ever talks to the brain.
+ADMIN_TOKEN = os.getenv("BRAIN_ADMIN_TOKEN", "").strip()
+
 # Headers that must not be forwarded to the worker (hop-by-hop / transport-level).
 _HOP_BY_HOP = frozenset({
     "host",
@@ -132,6 +137,37 @@ def _proxy_response_headers(response: httpx.Response) -> dict[str, str]:
     }
 
 
+# ── Admin helpers ─────────────────────────────────────────────────────────────
+
+def _check_admin(request: Request) -> Response | None:
+    """Return an error response if the request lacks a valid admin token.
+
+    Fail-closed: if ``ADMIN_TOKEN`` is unset the admin surface is disabled and
+    every request is rejected with 404 so its existence can't be probed.
+    """
+    if not ADMIN_TOKEN:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    token = _extract_bearer(request)
+    # Constant-time comparison to avoid timing leaks on the admin token.
+    if token is None or not _consttime_eq(token, ADMIN_TOKEN):
+        return JSONResponse(
+            {"error": "unauthorized"},
+            status_code=401,
+            headers={"WWW-Authenticate": 'Bearer realm="mcp-brain-admin"'},
+        )
+    return None
+
+
+def _consttime_eq(a: str, b: str) -> bool:
+    """Constant-time string equality — avoids early-exit timing leaks."""
+    if len(a) != len(b):
+        return False
+    result = 0
+    for ca, cb in zip(a, b):
+        result |= ord(ca) ^ ord(cb)
+    return result == 0
+
+
 # ── ASGI app factory ──────────────────────────────────────────────────────────
 
 def build_app(
@@ -145,14 +181,41 @@ def build_app(
 
     async def healthz(request: Request) -> JSONResponse:
         """Shallow health check — returns manager status and active worker count."""
-        # Snapshot the worker count under the lock via the public API.
-        # We intentionally avoid touching _workers directly outside the manager.
-        active_count = sum(
-            1
-            for info in list(process_manager._workers.values())
-            if info.process.poll() is None
-        )
+        snapshot = process_manager.list_workers()
+        active_count = sum(1 for w in snapshot if w["alive"])
         return JSONResponse({"status": "ok", "active_workers": active_count})
+
+    # ── /admin — Panel → brain control surface ────────────────────────────────
+    #
+    # Gated by BRAIN_ADMIN_TOKEN (fail-closed when unset).  These endpoints let
+    # the Panel react to user-initiated config changes without restarting the
+    # container or touching individual workers from outside.
+
+    async def admin_status(request: Request) -> Response:
+        err = _check_admin(request)
+        if err is not None:
+            return err
+        snapshot = process_manager.list_workers()
+        return JSONResponse({
+            "workers": snapshot,
+            "count": len(snapshot),
+            "active": sum(1 for w in snapshot if w["alive"]),
+        })
+
+    async def admin_reload_user(request: Request) -> Response:
+        """Kill the worker for the given user so the next request respawns it.
+
+        Used by the Panel after rewriting that user's ``integrations.env`` to
+        ensure the new credentials take effect without a container restart.
+        """
+        err = _check_admin(request)
+        if err is not None:
+            return err
+        user_id = request.path_params["user_id"]
+        if not user_id or "/" in user_id or ".." in user_id:
+            return JSONResponse({"error": "invalid user_id"}, status_code=400)
+        killed = await process_manager.kill_worker(user_id)
+        return JSONResponse({"ok": True, "user_id": user_id, "killed": killed})
 
     # ── catch-all proxy ───────────────────────────────────────────────────────
 
@@ -267,6 +330,9 @@ def build_app(
         routes=[
             Route("/healthz", healthz, methods=["GET", "HEAD"]),
             Route("/health", healthz, methods=["GET", "HEAD"]),
+            # Admin surface — must be registered before the catch-all proxy.
+            Route("/admin/status", admin_status, methods=["GET"]),
+            Route("/admin/reload-user/{user_id}", admin_reload_user, methods=["POST"]),
             # Catch-all proxy: all other paths (including /mcp) go to the worker.
             Route("/{path:path}", proxy, methods=["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]),
         ],

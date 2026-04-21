@@ -35,6 +35,52 @@ KNOWLEDGE_DIR = Path(os.getenv("MCP_KNOWLEDGE_DIR", "/data/knowledge"))
 STATE_DIR = Path(os.getenv("MCP_STATE_DIR", "/data/state"))
 
 
+def _load_integrations_env(state_dir: Path) -> None:
+    """Load per-user integration credentials from ``state_dir/integrations.env``.
+
+    The file is written by the Panel when the user saves integration credentials.
+    It is bind-mounted into the worker sandbox at ``/data/state/integrations.env``
+    via bwrap, so only this user's creds are visible to this worker process.
+
+    File format: plain ``KEY=VALUE`` lines (no quoting, no shell escapes).
+    Blank lines and ``#`` comments are ignored.  Values overwrite ``os.environ``
+    so that the existing env-var lookups below (``os.getenv("TODOIST_API_KEY")``
+    etc.) pick them up without any further changes.
+
+    If the file does not exist the function is a no-op — the worker falls back
+    to the container-level env vars it inherited from the manager.  This keeps
+    the single-user container layout working during the migration to the shared
+    container model.
+    """
+    creds_file = state_dir / "integrations.env"
+    try:
+        raw = creds_file.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning("worker: could not read %s: %s", creds_file, exc)
+        return
+
+    loaded = 0
+    for lineno, line in enumerate(raw.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, sep, value = stripped.partition("=")
+        if not sep:
+            logger.warning(
+                "worker: %s:%d malformed line (no '='), ignoring", creds_file, lineno
+            )
+            continue
+        key = key.strip()
+        if not key:
+            continue
+        os.environ[key] = value
+        loaded += 1
+    if loaded:
+        logger.info("worker: loaded %d integration credential(s) from %s", loaded, creds_file)
+
+
 def _build_worker_mcp():
     """Build and configure the FastMCP instance for the sandboxed worker.
 
@@ -76,6 +122,12 @@ def _build_worker_mcp():
     # knowledge dir may be empty on first connection).
     KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Load per-user integration credentials from the state dir.  Must run before
+    # integration tool registration below so the os.getenv() lookups see the
+    # file-loaded values.  No-op if the file is missing (backward-compatible
+    # with the container-per-user layout where creds come from container env).
+    _load_integrations_env(STATE_DIR)
 
     # Create indexes backed by files in STATE_DIR so they persist across
     # worker restarts and idle evictions.  build() will skip the rebuild

@@ -162,3 +162,159 @@ class TestWorkerInfo:
         assert info.socket_path == Path("/tmp/test.sock")
         assert info.process is mock_proc
         assert info.last_activity >= before
+
+
+# ── ProcessManager live-subprocess tests ─────────────────────────────────────
+#
+# kill_worker() sends real signals to real PIDs, so we can't fake it with just
+# a MagicMock — we spawn a short-lived Python subprocess, register it with the
+# manager, then assert that kill_worker terminates it cleanly.
+
+
+def _spawn_sleep_proc(tmp_path: Path):
+    """Spawn a Python subprocess that sleeps until signalled."""
+    import subprocess
+    import sys
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc
+
+
+class TestKillWorker:
+    """Tests for ProcessManager.kill_worker — runtime-triggered worker reload."""
+
+    async def test_kill_worker_terminates_process(self, tmp_path: Path):
+        from mcp_brain.isolation.manager import ProcessManager, WorkerInfo
+
+        pm = ProcessManager(
+            knowledge_base=tmp_path / "knowledge",
+            state_base=tmp_path / "state",
+            socket_dir=tmp_path / "sockets",
+        )
+        (tmp_path / "sockets").mkdir(parents=True, exist_ok=True)
+
+        proc = _spawn_sleep_proc(tmp_path)
+        socket_path = tmp_path / "sockets" / "alice.sock"
+        socket_path.touch()  # _cleanup_worker unlinks this; ensure it exists
+
+        pm._workers["alice"] = WorkerInfo(
+            user_id="alice",
+            pid=proc.pid,
+            socket_path=socket_path,
+            process=proc,
+        )
+
+        killed = await pm.kill_worker("alice")
+
+        assert killed is True
+        assert "alice" not in pm._workers
+        # Subprocess actually exited.
+        assert proc.poll() is not None
+        # Socket file cleaned up.
+        assert not socket_path.exists()
+
+    async def test_kill_worker_unknown_user_returns_false(self, tmp_path: Path):
+        from mcp_brain.isolation.manager import ProcessManager
+
+        pm = ProcessManager(
+            knowledge_base=tmp_path / "knowledge",
+            state_base=tmp_path / "state",
+            socket_dir=tmp_path / "sockets",
+        )
+        killed = await pm.kill_worker("no-such-user")
+        assert killed is False
+
+    async def test_kill_worker_already_dead_cleans_up(self, tmp_path: Path):
+        """If the subprocess already exited, we still remove it from _workers."""
+        import subprocess
+        import sys
+
+        from mcp_brain.isolation.manager import ProcessManager, WorkerInfo
+
+        pm = ProcessManager(
+            knowledge_base=tmp_path / "knowledge",
+            state_base=tmp_path / "state",
+            socket_dir=tmp_path / "sockets",
+        )
+        (tmp_path / "sockets").mkdir(parents=True, exist_ok=True)
+
+        # Spawn a process that exits immediately.
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "pass"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        proc.wait()
+
+        socket_path = tmp_path / "sockets" / "zombie.sock"
+        socket_path.touch()
+
+        pm._workers["zombie"] = WorkerInfo(
+            user_id="zombie",
+            pid=proc.pid,
+            socket_path=socket_path,
+            process=proc,
+        )
+
+        killed = await pm.kill_worker("zombie")
+        # No live worker to kill, so returns False — but still cleans up.
+        assert killed is False
+        assert "zombie" not in pm._workers
+        assert not socket_path.exists()
+
+
+class TestListWorkers:
+    """Tests for ProcessManager.list_workers — snapshot used by /admin/status."""
+
+    def test_empty_registry(self, tmp_path: Path):
+        from mcp_brain.isolation.manager import ProcessManager
+
+        pm = ProcessManager(
+            knowledge_base=tmp_path / "knowledge",
+            state_base=tmp_path / "state",
+            socket_dir=tmp_path / "sockets",
+        )
+        assert pm.list_workers() == []
+
+    def test_snapshot_reports_live_and_dead(self, tmp_path: Path):
+        import subprocess
+        from unittest.mock import MagicMock
+
+        from mcp_brain.isolation.manager import ProcessManager, WorkerInfo
+
+        pm = ProcessManager(
+            knowledge_base=tmp_path / "knowledge",
+            state_base=tmp_path / "state",
+            socket_dir=tmp_path / "sockets",
+        )
+
+        live = MagicMock(spec=subprocess.Popen)
+        live.poll.return_value = None  # alive
+        dead = MagicMock(spec=subprocess.Popen)
+        dead.poll.return_value = 0  # exited
+
+        pm._workers["alive-user"] = WorkerInfo(
+            user_id="alive-user",
+            pid=111,
+            socket_path=tmp_path / "sockets" / "alive.sock",
+            process=live,
+        )
+        pm._workers["dead-user"] = WorkerInfo(
+            user_id="dead-user",
+            pid=222,
+            socket_path=tmp_path / "sockets" / "dead.sock",
+            process=dead,
+        )
+
+        snapshot = pm.list_workers()
+        by_id = {w["user_id"]: w for w in snapshot}
+
+        assert by_id["alive-user"]["alive"] is True
+        assert by_id["alive-user"]["pid"] == 111
+        assert isinstance(by_id["alive-user"]["idle_seconds"], float)
+        assert by_id["dead-user"]["alive"] is False
+        assert by_id["dead-user"]["pid"] == 222
