@@ -1,4 +1,0 @@
-# Dev overrides
-services:
-  mcp-brain:
-    image: ${MCP_BRAIN_IMAGE:-ghcr.io/RyKaT07/mcp-brain:dev}
