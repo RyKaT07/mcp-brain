@@ -24,6 +24,13 @@ logger = logging.getLogger(__name__)
 
 _SKIP_DIRS = {"_meta", "inbox", ".git", "users"}
 
+# Bump this whenever the index schema or the parsing/extraction code
+# changes in a way that makes previously-persisted rows incorrect or
+# inconsistent.  On mismatch the on-disk DB is wiped and rebuilt on the
+# next build() call.  Fingerprint-based skip alone cannot detect code
+# changes (only file mtimes), so this counter is the escape hatch.
+_SCHEMA_VERSION = "1"
+
 
 def _knowledge_fingerprint(knowledge_dir: Path) -> str:
     """Compute a fast fingerprint of all knowledge markdown files.
@@ -93,10 +100,39 @@ class SearchIndex:
         )
         self._conn.commit()
 
+        self._enforce_schema_version()
+
         # Per-user indexes: user_id → SearchIndex (leaf instances, not recursive).
         # Created lazily on first write or explicit build_user() call.
         self._user_indexes: dict[str, "SearchIndex"] = {}
         self._user_indexes_lock = threading.Lock()
+
+    def _enforce_schema_version(self) -> None:
+        """Wipe persisted rows if the on-disk schema version is out of date.
+
+        The FTS table + _meta rows are cleared (so the next ``build()`` does a
+        full rebuild) and the current ``_SCHEMA_VERSION`` is recorded.  For
+        in-memory DBs (``db_path is None``) this is still safe and cheap — the
+        tables are empty at this point anyway.
+        """
+        cur = self._conn.execute("SELECT value FROM _meta WHERE key = 'schema_version'")
+        row = cur.fetchone()
+        stored = row[0] if row else None
+        if stored == _SCHEMA_VERSION:
+            return
+        if stored is not None:
+            logger.info(
+                "search: schema version %s → %s, rebuilding index",
+                stored,
+                _SCHEMA_VERSION,
+            )
+        self._conn.execute("DELETE FROM knowledge_fts")
+        self._conn.execute("DELETE FROM _meta WHERE key = 'fingerprint'")
+        self._conn.execute(
+            "INSERT OR REPLACE INTO _meta(key, value) VALUES ('schema_version', ?)",
+            (_SCHEMA_VERSION,),
+        )
+        self._conn.commit()
 
     # ------------------------------------------------------------------
     # Per-user index management

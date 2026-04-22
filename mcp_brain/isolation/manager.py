@@ -115,6 +115,70 @@ class ProcessManager:
         if info is not None:
             info.last_activity = time.monotonic()
 
+    async def kill_worker(self, user_id: str) -> bool:
+        """Terminate the worker for *user_id* and remove it from the registry.
+
+        The next request for this user will trigger a fresh spawn, so any
+        file-based config (integrations.env, auth.yaml) is reloaded without
+        impacting other users.  Safe to call when no worker exists — returns
+        ``False`` in that case.
+
+        Returns:
+            True if a live worker was terminated, False if none was registered.
+        """
+        async with self._lock:
+            info = self._workers.pop(user_id, None)
+            if info is None:
+                return False
+            if info.process.poll() is not None:
+                # Already exited — just clean up socket/cgroup.
+                self._cleanup_worker(user_id, info)
+                return False
+            logger.info(
+                "manager: killing worker user=%s pid=%d on request",
+                user_id,
+                info.pid,
+            )
+            _send_signal(info.process, signal.SIGTERM, user_id)
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(info.process.wait), timeout=_SIGTERM_GRACE
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "manager: worker user=%s pid=%d did not exit on SIGTERM — sending SIGKILL",
+                    user_id,
+                    info.pid,
+                )
+                _send_signal(info.process, signal.SIGKILL, user_id)
+                try:
+                    await asyncio.to_thread(info.process.wait)
+                except Exception:
+                    pass
+            self._cleanup_worker(user_id, info)
+            return True
+
+    def list_workers(self) -> list[dict[str, object]]:
+        """Return a snapshot of the currently-registered workers.
+
+        Safe to call from any thread / task.  Dead processes that haven't yet
+        been reaped are included with ``alive=False`` so operators can see
+        pending cleanup state.
+        """
+        now = time.monotonic()
+        snapshot: list[dict[str, object]] = []
+        for user_id, info in list(self._workers.items()):
+            snapshot.append(
+                {
+                    "user_id": user_id,
+                    "pid": info.pid,
+                    "alive": info.process.poll() is None,
+                    "idle_seconds": round(now - info.last_activity, 1),
+                    "socket_path": str(info.socket_path),
+                }
+            )
+        return snapshot
+
     async def shutdown(self) -> None:
         """Gracefully terminate all managed workers.
 
