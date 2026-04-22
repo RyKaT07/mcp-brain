@@ -2,7 +2,7 @@ name: docker
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     tags: ["v*.*.*"]
   pull_request:
     branches: [main]
@@ -44,6 +44,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/develop' }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -56,3 +57,32 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    steps:
+      - name: Determine environment
+        id: env
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "name=prod" >> $GITHUB_OUTPUT
+            echo "host=${{ secrets.PROD_SERVER_HOST }}" >> $GITHUB_OUTPUT
+            echo "deploy_path=${{ secrets.PROD_DEPLOY_PATH }}" >> $GITHUB_OUTPUT
+          else
+            echo "name=dev" >> $GITHUB_OUTPUT
+            echo "host=${{ secrets.DEV_SERVER_HOST }}" >> $GITHUB_OUTPUT
+            echo "deploy_path=${{ secrets.DEV_DEPLOY_PATH }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ steps.env.outputs.host }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ${{ steps.env.outputs.deploy_path }}
+            docker compose pull
+            docker compose -f docker-compose.yml -f docker-compose.${{ steps.env.outputs.name }}.yml up -d
