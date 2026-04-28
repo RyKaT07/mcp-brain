@@ -592,7 +592,16 @@ def register_knowledge_tools(
                 # Get last commit date for this file.
                 try:
                     result = subprocess.run(
-                        ["git", "log", "-1", "--format=%aI", "--", str(md_file)],
+                        [
+                            "git",
+                            "-c",
+                            "safe.directory=*",
+                            "log",
+                            "-1",
+                            "--format=%aI",
+                            "--",
+                            str(md_file),
+                        ],
                         cwd=effective_dir,
                         capture_output=True,
                         text=True,
@@ -695,6 +704,8 @@ def register_knowledge_tools(
             result = subprocess.run(
                 [
                     "git",
+                    "-c",
+                    "safe.directory=*",
                     "log",
                     f"-{limit}",
                     "--format=%h%x09%an%x09%aI%x09%ar%x09%s",
@@ -778,6 +789,8 @@ def register_knowledge_tools(
 
         cmd = [
             "git",
+            "-c",
+            "safe.directory=*",
             "log",
             f"-{limit}",
             "--format=%h%x09%an%x09%aI%x09%ar%x09%s",
@@ -1015,7 +1028,16 @@ def register_knowledge_tools(
                 # Freshness.
                 try:
                     result = subprocess.run(
-                        ["git", "log", "-1", "--format=%aI", "--", str(md_file)],
+                        [
+                            "git",
+                            "-c",
+                            "safe.directory=*",
+                            "log",
+                            "-1",
+                            "--format=%aI",
+                            "--",
+                            str(md_file),
+                        ],
                         cwd=effective_dir,
                         capture_output=True,
                         text=True,
