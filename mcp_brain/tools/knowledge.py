@@ -674,6 +674,77 @@ def register_knowledge_tools(
         lines.append("Legend: 🟢 ≤7d  🟡 ≤30d  🟠 ≤90d  🔴 >90d  ❓ no history")
         return "\n".join(lines)
 
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
+    def knowledge_history(scope: str, project: str, limit: int = 20) -> str:
+        """Return per-file git commit history for a knowledge file.
+
+        One commit per line, tab-separated:
+            <sha7>\\t<author>\\t<iso_date>\\t<relative_age>\\t<subject>
+
+        Returns the literal text "No history" when the file has no
+        commits (e.g. brand-new file not yet committed, or the
+        knowledge directory has no git repo). Callers should treat that
+        as an empty history rather than an error.
+
+        Args:
+            scope: Category — e.g. 'work', 'school', 'homelab'
+            project: Project/topic name (filename without .md)
+            limit: Max commits to return (1-100, default 20)
+        """
+        meter_call("knowledge_history")
+        try:
+            require(f"knowledge:read:{scope}")
+        except PermissionDenied as e:
+            return str(e)
+
+        err = _validate_scope_project(scope, project)
+        if err:
+            return err
+
+        if not isinstance(limit, int) or limit < 1:
+            limit = 20
+        limit = min(limit, 100)
+
+        effective_dir = get_effective_knowledge_dir(knowledge_dir)
+        try:
+            filepath = _resolve_file(effective_dir, scope, project)
+        except ValueError as e:
+            return f"Error: {e}"
+        if not filepath.exists():
+            return f"No knowledge file found: {scope}/{project}"
+
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "log",
+                    f"-{limit}",
+                    "--format=%h%x09%an%x09%aI%x09%ar%x09%s",
+                    "--",
+                    str(filepath),
+                ],
+                cwd=effective_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except FileNotFoundError:
+            # git not installed — stdio dev mode without git
+            return "No history"
+        except subprocess.CalledProcessError as exc:
+            logger.warning(
+                "git log failed for %s/%s: %s",
+                scope,
+                project,
+                (exc.stderr or exc.stdout or "<no output>").strip(),
+            )
+            return "No history"
+
+        output = result.stdout.strip()
+        if not output:
+            return "No history"
+        return output
+
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     def knowledge_delete(scope: str, project: str) -> str:
         """Delete a knowledge file permanently.
