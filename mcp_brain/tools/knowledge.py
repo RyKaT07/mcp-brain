@@ -723,6 +723,132 @@ def register_knowledge_tools(
             return "No history"
         return output
 
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
+    def knowledge_timeline(scope: str | None = None, limit: int = 50) -> str:
+        """Return a chronological commit log across knowledge files.
+
+        Useful for the panel's Timeline view. One commit per line,
+        tab-separated:
+            <sha7>\\t<author>\\t<iso_date>\\t<relative_age>\\t<scope>\\t<project>\\t<subject>
+
+        Permission filtering: only commits touching files inside scopes
+        the caller can read are returned. With `scope=None`, the result
+        is filtered to scopes the caller is allowed to read; with an
+        explicit `scope`, that scope must be allowed.
+
+        Returns the literal text "No history" when there are no
+        commits or git is unavailable.
+
+        Args:
+            scope: Optional scope filter — e.g. 'work', 'school'.
+            limit: Max commits to return (1-200, default 50).
+        """
+        meter_call("knowledge_timeline")
+
+        allowed = allowed_subscopes("knowledge:read")
+        if scope:
+            err = _validate_scope_project(scope, "placeholder")
+            # _validate_scope_project also validates the project arg, so we
+            # only care about the scope-side error string here.
+            if err and "scope" in err.lower():
+                return err
+            if allowed is not ALL and scope not in allowed:
+                return f"Permission denied: no read access to scope '{scope}'."
+
+        if not isinstance(limit, int) or limit < 1:
+            limit = 50
+        limit = min(limit, 200)
+
+        effective_dir = get_effective_knowledge_dir(knowledge_dir)
+        if not effective_dir.exists():
+            return "No history"
+
+        # Build list of pathspecs git log will scan. With an explicit
+        # scope we narrow to that subdirectory; otherwise we scan only
+        # the scopes the caller can read so the response never leaks
+        # commit subjects from off-limits scopes.
+        if scope:
+            pathspecs = [_sanitize(scope)]
+        elif allowed is ALL:
+            pathspecs = []  # whole repo
+        else:
+            pathspecs = sorted(_sanitize(s) for s in allowed)
+            if not pathspecs:
+                return "No history"
+
+        cmd = [
+            "git",
+            "log",
+            f"-{limit}",
+            "--format=%h%x09%an%x09%aI%x09%ar%x09%s",
+            "--name-only",
+        ]
+        if pathspecs:
+            cmd.append("--")
+            cmd.extend(pathspecs)
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=effective_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except FileNotFoundError:
+            return "No history"
+        except subprocess.CalledProcessError as exc:
+            logger.warning(
+                "git log (timeline) failed: %s",
+                (exc.stderr or exc.stdout or "<no output>").strip(),
+            )
+            return "No history"
+
+        raw = result.stdout.strip()
+        if not raw:
+            return "No history"
+
+        # `--name-only` produces alternating header + filenames blocks.
+        # Pair the header with the first scope/project file we see (the
+        # H2-style commits typically only touch one file). Older
+        # multi-file commits fall back to the first knowledge md path.
+        lines: list[str] = []
+        current_header: str | None = None
+        files_for_current: list[str] = []
+
+        def flush() -> None:
+            if current_header is None:
+                return
+            target = next(
+                (f for f in files_for_current if f.endswith(".md") and "/" in f),
+                None,
+            )
+            if target is None:
+                return
+            scope_name, file_name = target.split("/", 1)
+            project_name = file_name.removesuffix(".md")
+            parts = current_header.split("\t", 4)
+            if len(parts) < 5:
+                return
+            sha, author, iso, age, subject = parts
+            lines.append(
+                f"{sha}\t{author}\t{iso}\t{age}\t{scope_name}\t{project_name}\t{subject}"
+            )
+
+        for raw_line in raw.split("\n"):
+            if "\t" in raw_line:
+                # New commit header; flush the previous one.
+                flush()
+                current_header = raw_line
+                files_for_current = []
+            elif raw_line.strip():
+                files_for_current.append(raw_line.strip())
+        flush()
+
+        if not lines:
+            return "No history"
+        return "\n".join(lines)
+
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     def knowledge_delete(scope: str, project: str) -> str:
         """Delete a knowledge file permanently.
