@@ -519,6 +519,122 @@ class TestKnowledgeFreshness:
         assert "❓" in result or "untracked" in result
 
 
+class TestKnowledgeHistory:
+    def _make_file(self, base, scope, project, content="## Notes\n\nSome notes.\n"):
+        d = base / scope
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{project}.md").write_text(content, encoding="utf-8")
+
+    def test_missing_file(self, knowledge_tools):
+        tools, base = knowledge_tools
+        result = tools["knowledge_history"]("school", "ghost")
+        assert "No knowledge file" in result
+
+    def test_no_git_returns_no_history(self, knowledge_tools):
+        tools, base = knowledge_tools
+        self._make_file(base, "school", "notes")
+        with patch("subprocess.run", side_effect=FileNotFoundError("no git")):
+            result = tools["knowledge_history"]("school", "notes")
+        assert result == "No history"
+
+    def test_empty_log_returns_no_history(self, knowledge_tools):
+        tools, base = knowledge_tools
+        self._make_file(base, "school", "notes")
+        git_result = MagicMock()
+        git_result.returncode = 0
+        git_result.stdout = ""
+        with patch("subprocess.run", return_value=git_result):
+            result = tools["knowledge_history"]("school", "notes")
+        assert result == "No history"
+
+    def test_parses_commits(self, knowledge_tools):
+        tools, base = knowledge_tools
+        self._make_file(base, "school", "notes")
+        git_result = MagicMock()
+        git_result.returncode = 0
+        git_result.stdout = (
+            "abc1234\tAlice\t2026-04-26T12:00:00+00:00\t2 days ago\tEdit overview\n"
+            "def5678\tAlice\t2026-04-20T12:00:00+00:00\t1 week ago\tCreate file\n"
+        )
+        with patch("subprocess.run", return_value=git_result):
+            result = tools["knowledge_history"]("school", "notes")
+        assert "abc1234" in result
+        assert "Edit overview" in result
+        assert "def5678" in result
+
+    def test_limit_clamped(self, knowledge_tools):
+        tools, base = knowledge_tools
+        self._make_file(base, "school", "notes")
+        captured: dict = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            r = MagicMock()
+            r.returncode = 0
+            r.stdout = ""
+            return r
+
+        with patch("subprocess.run", side_effect=fake_run):
+            tools["knowledge_history"]("school", "notes", limit=500)
+        # 500 must be clamped to 100
+        assert "-100" in captured["cmd"]
+
+
+class TestKnowledgeTimeline:
+    def _make_file(self, base, scope, project, content="## Notes\n\nSome notes.\n"):
+        d = base / scope
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{project}.md").write_text(content, encoding="utf-8")
+
+    def test_no_git_returns_no_history(self, knowledge_tools):
+        tools, base = knowledge_tools
+        with patch("subprocess.run", side_effect=FileNotFoundError("no git")):
+            result = tools["knowledge_timeline"]()
+        assert result == "No history"
+
+    def test_empty_log_returns_no_history(self, knowledge_tools):
+        tools, base = knowledge_tools
+        git_result = MagicMock()
+        git_result.returncode = 0
+        git_result.stdout = ""
+        with patch("subprocess.run", return_value=git_result):
+            result = tools["knowledge_timeline"]()
+        assert result == "No history"
+
+    def test_parses_commits(self, knowledge_tools):
+        tools, base = knowledge_tools
+        git_result = MagicMock()
+        git_result.returncode = 0
+        # `git log --name-only` output: header line then file paths.
+        git_result.stdout = (
+            "abc1234\tAlice\t2026-04-26T12:00:00+00:00\t2 days ago\tEdit overview\n"
+            "school/notes.md\n"
+            "\n"
+            "def5678\tAlice\t2026-04-20T12:00:00+00:00\t1 week ago\tCreate file\n"
+            "homelab/router.md\n"
+        )
+        with patch("subprocess.run", return_value=git_result):
+            result = tools["knowledge_timeline"]()
+        assert "abc1234" in result
+        assert "school" in result and "notes" in result
+        assert "homelab" in result and "router" in result
+
+    def test_limit_clamped(self, knowledge_tools):
+        tools, base = knowledge_tools
+        captured: dict = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            r = MagicMock()
+            r.returncode = 0
+            r.stdout = ""
+            return r
+
+        with patch("subprocess.run", side_effect=fake_run):
+            tools["knowledge_timeline"](limit=10_000)
+        assert "-200" in captured["cmd"]
+
+
 class TestKnowledgeMap:
     def _make_file(self, base, scope, project, content="## Notes\n\nSome notes.\n"):
         d = base / scope
