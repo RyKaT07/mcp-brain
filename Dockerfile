@@ -28,7 +28,11 @@ RUN groupadd --gid 1000 mcpbrain \
     && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash mcpbrain
 
 COPY --from=build /dist/*.whl /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl \
+# Install the wheel together with the optional `embeddings` extra
+# (fastembed + sqlite-vec) so semantic search works out of the box.
+# The fastembed model itself (~30 MB) is downloaded to ~/.cache/fastembed
+# on first use, not baked into the image.
+RUN pip install --no-cache-dir "$(ls /tmp/*.whl)[embeddings]" \
     && pip install --no-cache-dir pdfplumber python-docx \
     && rm -f /tmp/*.whl
 
