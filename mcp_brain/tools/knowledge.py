@@ -16,6 +16,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
+from mcp_brain.embeddings.service import EmbeddingService
 from mcp_brain.graph import RelationshipGraph
 from mcp_brain.rate_limit import RateLimiter
 from mcp_brain.search import SearchIndex
@@ -234,6 +235,7 @@ def register_knowledge_tools(
     tool_policy: str = "",
     search_index: SearchIndex | None = None,
     rel_graph: RelationshipGraph | None = None,
+    embedding_service: EmbeddingService | None = None,
 ):
     """Register knowledge_* tools on the MCP server.
 
@@ -368,6 +370,26 @@ def register_knowledge_tools(
                         search_index.update_file(scope, project, rebuilt)
                     if rel_graph is not None:
                         rel_graph.update_file(scope, project, rebuilt)
+
+                # Diff-aware re-embed of just this file. The embedding
+                # service's chunker hashes each chunk's text, so a single
+                # section edit re-embeds 1-2 chunks instead of the whole
+                # file. Failures here are logged but never block the write.
+                if embedding_service is not None:
+                    try:
+                        stats = embedding_service.refresh_file(
+                            scope, project, rebuilt, user_id=_user_id
+                        )
+                        logger.debug(
+                            "embeddings.refresh %s/%s: %s", scope, project, stats
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "embeddings.refresh failed for %s/%s",
+                            scope,
+                            project,
+                            exc_info=True,
+                        )
 
                 return f"Updated {scope}/{project} § {section}"
             finally:
@@ -748,6 +770,18 @@ def register_knowledge_tools(
                 search_index.remove_file(scope, project)
             if rel_graph is not None:
                 rel_graph.remove_file(scope, project)
+
+        # Drop every chunk for the deleted file from the vector store too.
+        if embedding_service is not None:
+            try:
+                embedding_service.delete_file(scope, project, user_id=_user_id)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "embeddings.delete_file failed for %s/%s",
+                    scope,
+                    project,
+                    exc_info=True,
+                )
 
         return f"Deleted {scope}/{project}"
 
