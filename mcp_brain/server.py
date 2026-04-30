@@ -23,9 +23,12 @@ which is why the previous `Mount('/', sse_app())` trick worked without
 this gymnastics — SSE is now deprecated in the MCP spec, so we migrated.
 """
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import FastMCP
