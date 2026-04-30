@@ -44,6 +44,12 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
+            # Trunk-based: every main push also tags `:dev`. The panel
+            # dev compose pulls `:dev`, so this gives dev an automatic
+            # refresh on every brain release without a separate
+            # develop branch. If staging-vs-prod isolation is wanted
+            # later, add a develop branch + change this rule.
+            type=raw,value=dev,enable={{is_default_branch}}
 
       - name: Build and push
         uses: docker/build-push-action@v5
