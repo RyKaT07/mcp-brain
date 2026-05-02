@@ -599,24 +599,24 @@ class TestKnowledgeRelatedAsOf:
         assert "2024-01-01" in result
 
 
-class TestKnowledgeTimelineTool:
+class TestKnowledgeEntityTimelineTool:
     def test_returns_timeline(self, graph_tools):
         tools, _, rel_graph = graph_tools
         rel_graph.update_file("work", "proj", "See [[docker]].\n")
         with patch("mcp_brain.tools._perms.get_access_token", return_value=None):
-            result = tools["knowledge_timeline"]("work/proj")
+            result = tools["knowledge_entity_timeline"]("work/proj")
         assert "work/proj" in result.lower() or "timeline" in result.lower()
 
     def test_unknown_entity_returns_not_found(self, graph_tools):
         tools, _, _ = graph_tools
         with patch("mcp_brain.tools._perms.get_access_token", return_value=None):
-            result = tools["knowledge_timeline"]("nonexistent/entity")
+            result = tools["knowledge_entity_timeline"]("nonexistent/entity")
         assert "not found" in result.lower()
 
     def test_empty_entity_returns_error(self, graph_tools):
         tools, _, _ = graph_tools
         with patch("mcp_brain.tools._perms.get_access_token", return_value=None):
-            result = tools["knowledge_timeline"]("")
+            result = tools["knowledge_entity_timeline"]("")
         assert "error" in result.lower() or "empty" in result.lower()
 
     def test_no_readable_scopes_returns_error(self, graph_tools):
@@ -624,7 +624,7 @@ class TestKnowledgeTimelineTool:
         rel_graph.update_file("school", "notes", "Content.\n")
         tok = _mock_token(["inbox:read"])
         with patch("mcp_brain.tools._perms.get_access_token", return_value=tok):
-            result = tools["knowledge_timeline"]("school/notes")
+            result = tools["knowledge_entity_timeline"]("school/notes")
         assert "no readable" in result.lower() or "not found" in result.lower()
 
     def test_scope_denied_returns_error(self, graph_tools):
@@ -632,14 +632,14 @@ class TestKnowledgeTimelineTool:
         rel_graph.update_file("secret", "data", "Content.\n")
         tok = _mock_token(["knowledge:read:school"])
         with patch("mcp_brain.tools._perms.get_access_token", return_value=tok):
-            result = tools["knowledge_timeline"]("secret/data", scope="secret")
+            result = tools["knowledge_entity_timeline"]("secret/data", scope="secret")
         assert "denied" in result.lower() or "permission" in result.lower()
 
     def test_shows_relationship_entries(self, graph_tools):
         tools, _, rel_graph = graph_tools
         rel_graph.update_file("work", "proj", "See [[docker]].\n")
         with patch("mcp_brain.tools._perms.get_access_token", return_value=None):
-            result = tools["knowledge_timeline"]("work/proj")
+            result = tools["knowledge_entity_timeline"]("work/proj")
         assert "docker" in result
         assert "mentions" in result or "references" in result
 
