@@ -28,7 +28,14 @@ RUN groupadd --gid 1000 mcpbrain \
     && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash mcpbrain
 
 COPY --from=build /dist/*.whl /tmp/
+# Install the wheel, then layer on the optional embedding deps explicitly.
+# pip's `package[extra]` extras syntax only works with a package *name*,
+# not with a wheel path — installing `foo.whl[embeddings]` quietly skips
+# the extras. Naming fastembed + sqlite-vec directly side-steps that.
+# The fastembed model itself (~30 MB) is downloaded to ~/.cache/fastembed
+# on first use, not baked into the image.
 RUN pip install --no-cache-dir /tmp/*.whl \
+    && pip install --no-cache-dir fastembed>=0.4.0 sqlite-vec>=0.1.6 \
     && pip install --no-cache-dir pdfplumber python-docx \
     && rm -f /tmp/*.whl
 

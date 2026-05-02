@@ -31,7 +31,9 @@ _SKIP_DIRS = {"_meta", "inbox", ".git", "users"}
 # the on-disk DB is wiped and rebuilt on the next build() call.  Fingerprint
 # alone cannot detect code changes (only file mtimes), so this counter is the
 # escape hatch.
-_SCHEMA_VERSION = "1"
+#
+# v2: introduced `#tag` extraction (entities of type `tag`, predicate `tagged`).
+_SCHEMA_VERSION = "2"
 
 
 def _knowledge_fingerprint(knowledge_dir: Path) -> str:
@@ -53,6 +55,10 @@ _RE_WIKILINK = re.compile(r"\[\[([^\]]+)\]\]")
 _RE_BACKLINK = re.compile(r"@([\w/-]+)")
 _RE_FILE_REF = re.compile(r"\b([\w-]+/[\w-]+)\.md\b")
 _RE_H2 = re.compile(r"^## (.+)$", re.MULTILINE)
+# `#tag` hashtag-style. Match only after whitespace or line start so it
+# doesn't pick up Markdown headings (`## Foo`) or URL fragments (`#frag`
+# attached to a word). Tags are 2-32 chars of [a-zA-Z0-9_-].
+_RE_TAG = re.compile(r"(?:^|\s)#([A-Za-z][A-Za-z0-9_-]{1,31})\b")
 
 
 def _normalize(name: str) -> str:
@@ -206,6 +212,37 @@ def _extract_entities_and_rels(
             "project": project,
         },
     )
+
+    # `#tag` hashtags → tag entities + `tagged` relationships (confidence 0.7).
+    # Tags are global (no scope/project) so files across scopes that share a
+    # tag merge into the same entity in the graph.  Dedupe per-file so a tag
+    # repeated five times in one document doesn't inflate the relationship
+    # count.
+    seen_tags: set[str] = set()
+    for match in _RE_TAG.finditer(content):
+        tag = match.group(1).lower()
+        if tag in seen_tags:
+            continue
+        seen_tags.add(tag)
+        entities.append(
+            {
+                "name": tag,
+                "entity_type": "tag",
+                "scope": "",
+                "project": "",
+            }
+        )
+        relationships.append(
+            {
+                "subject": file_entity,
+                "predicate": "tagged",
+                "object": tag,
+                "source_scope": scope,
+                "source_project": project,
+                "source_section": "_meta",
+                "confidence": 0.7,
+            }
+        )
 
     return entities, relationships
 
@@ -822,3 +859,93 @@ class RelationshipGraph:
                 }
                 for row in cur.fetchall()
             ]
+
+    def list_files(self, allowed_scopes: set[str] | None = None) -> list[dict]:
+        """List every file entity in the graph, optionally filtered by scope.
+
+        Returns ``[{name, scope, project}]`` ordered by scope/project.
+        Used by the ``knowledge_graph`` tool to materialise the node
+        list for the panel's Graph view.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT e.name, e.scope, e.project
+                FROM entities e
+                WHERE e.entity_type = 'file'
+                ORDER BY e.scope, e.project
+                """
+            )
+            rows = cur.fetchall()
+        out: list[dict] = []
+        for row in rows:
+            scope = row[1]
+            if allowed_scopes is not None and scope not in allowed_scopes:
+                continue
+            out.append({"name": row[0], "scope": scope, "project": row[2]})
+        return out
+
+    def all_relationships(
+        self,
+        *,
+        predicates: list[str] | None = None,
+        allowed_scopes: set[str] | None = None,
+    ) -> list[dict]:
+        """Return every relationship with subject and object metadata expanded.
+
+        Each row carries the entity types of both endpoints so the caller
+        can decide whether the edge connects two files, a file and a tag,
+        a file and a concept, etc.  ``allowed_scopes`` filters by the
+        *source* scope (where the edit lived) so callers honour the
+        permission model — tags and concepts have no scope of their own.
+        """
+        sql = """
+            SELECT
+                s.name           AS subject_name,
+                s.entity_type    AS subject_type,
+                s.scope          AS subject_scope,
+                s.project        AS subject_project,
+                r.predicate      AS predicate,
+                o.name           AS object_name,
+                o.entity_type    AS object_type,
+                o.scope          AS object_scope,
+                o.project        AS object_project,
+                r.source_scope   AS source_scope,
+                r.source_project AS source_project,
+                r.confidence     AS confidence
+            FROM relationships r
+            JOIN entities s ON s.id = r.subject_id
+            JOIN entities o ON o.id = r.object_id
+        """
+        params: list = []
+        clauses: list[str] = []
+        if predicates:
+            placeholders = ",".join("?" * len(predicates))
+            clauses.append(f"r.predicate IN ({placeholders})")
+            params.extend(predicates)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            rows = cur.fetchall()
+        out: list[dict] = []
+        for row in rows:
+            if allowed_scopes is not None and row[9] not in allowed_scopes:
+                continue
+            out.append(
+                {
+                    "subject_name": row[0],
+                    "subject_type": row[1],
+                    "subject_scope": row[2],
+                    "subject_project": row[3],
+                    "predicate": row[4],
+                    "object_name": row[5],
+                    "object_type": row[6],
+                    "object_scope": row[7],
+                    "object_project": row[8],
+                    "source_scope": row[9],
+                    "source_project": row[10],
+                    "confidence": float(row[11]),
+                }
+            )
+        return out

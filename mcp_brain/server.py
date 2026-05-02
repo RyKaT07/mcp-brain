@@ -23,9 +23,12 @@ which is why the previous `Mount('/', sse_app())` trick worked without
 this gymnastics — SSE is now deprecated in the MCP spec, so we migrated.
 """
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import FastMCP
@@ -52,9 +55,12 @@ from mcp_brain.tools.maintain import register_maintain_tools
 from mcp_brain.tools.meta import register_meta_tools
 from mcp_brain.tools.search import register_search_tools
 from mcp_brain.tools.graph import register_graph_tools
+from mcp_brain.tools.knowledge_graph_tool import register_knowledge_graph_tool
+from mcp_brain.tools.semantic import register_semantic_tools
 from mcp_brain.tools.wake import register_wake_tools
 from mcp_brain.search import SearchIndex
 from mcp_brain.graph import RelationshipGraph
+from mcp_brain.embeddings.service import EmbeddingService
 
 KNOWLEDGE_DIR = Path(os.getenv("MCP_KNOWLEDGE_DIR", "./knowledge"))
 AUTH_CONFIG_PATH = Path(os.getenv("MCP_AUTH_CONFIG", "./config/auth.yaml"))
@@ -344,7 +350,26 @@ def _build_mcp() -> FastMCP:
     rel_graph = RelationshipGraph()
     rel_graph.build(KNOWLEDGE_DIR)
 
-    register_knowledge_tools(mcp, KNOWLEDGE_DIR, tool_policy=tool_policy, search_index=search_index, rel_graph=rel_graph)
+    # Optional semantic-search subsystem. ``create_or_none`` returns
+    # None when fastembed/sqlite-vec aren't installed or
+    # MCP_DISABLE_EMBEDDINGS is set, so the rest of the server keeps
+    # working with BM25 + graph alone.
+    embedding_service = EmbeddingService.create_or_none(KNOWLEDGE_DIR)
+    if embedding_service is not None:
+        try:
+            stats = embedding_service.bootstrap(KNOWLEDGE_DIR)
+            logger.info("embeddings bootstrap: %s", stats)
+        except Exception:  # noqa: BLE001
+            logger.warning("embeddings bootstrap failed", exc_info=True)
+
+    register_knowledge_tools(
+        mcp,
+        KNOWLEDGE_DIR,
+        tool_policy=tool_policy,
+        search_index=search_index,
+        rel_graph=rel_graph,
+        embedding_service=embedding_service,
+    )
     register_maintain_tools(mcp, KNOWLEDGE_DIR)
     register_meta_tools(mcp, KNOWLEDGE_DIR)
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
@@ -413,6 +438,8 @@ def _build_mcp() -> FastMCP:
         )
     register_search_tools(mcp, KNOWLEDGE_DIR, search_index)
     register_graph_tools(mcp, KNOWLEDGE_DIR, rel_graph)
+    register_knowledge_graph_tool(mcp, KNOWLEDGE_DIR, rel_graph, embedding_service)
+    register_semantic_tools(mcp, KNOWLEDGE_DIR, embedding_service)
     # brain_wake must be registered LAST so its tool inventory snapshot
     # captures every tool registered above (including conditional ones).
     register_wake_tools(mcp, KNOWLEDGE_DIR, briefing_trigger=briefing_trigger)
