@@ -57,6 +57,7 @@ from mcp_brain.tools.meta import register_meta_tools
 from mcp_brain.tools.search import register_search_tools
 from mcp_brain.tools.graph import register_graph_tools
 from mcp_brain.tools.knowledge_graph_tool import register_knowledge_graph_tool
+from mcp_brain.tools.layout import register_layout_tools
 from mcp_brain.tools.semantic import register_semantic_tools
 from mcp_brain.tools.wake import register_wake_tools
 from mcp_brain.search import SearchIndex
@@ -470,6 +471,7 @@ def _build_mcp() -> FastMCP:
     register_search_tools(mcp, KNOWLEDGE_DIR, search_index)
     register_graph_tools(mcp, KNOWLEDGE_DIR, rel_graph)
     register_knowledge_graph_tool(mcp, KNOWLEDGE_DIR, rel_graph, embedding_service)
+    register_layout_tools(mcp, KNOWLEDGE_DIR, rel_graph)
     register_semantic_tools(mcp, KNOWLEDGE_DIR, embedding_service)
     # brain_wake must be registered LAST so its tool inventory snapshot
     # captures every tool registered above (including conditional ones).

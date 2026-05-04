@@ -898,3 +898,88 @@ class TestKnowledgeGraphToolsPerUser:
             result = tools["knowledge_related"]("work/proj")
 
         assert "dave_only" in result
+
+
+class TestPersistedLayout:
+    """``RelationshipGraph`` layout I/O — store node positions for the
+    panel's force-directed graph view so the layout is stable across
+    reloads / clients."""
+
+    def test_get_layout_empty_returns_empty_list(self, tmp_path):
+        g = RelationshipGraph(db_path=tmp_path / "g.db")
+        assert g.get_layout() == []
+
+    def test_set_layout_inserts_then_get_returns_same(self, tmp_path):
+        g = RelationshipGraph(db_path=tmp_path / "g.db")
+        n = g.set_layout(
+            [
+                {"scope": "work", "project": "alpha", "x": 100.0, "y": 200.0},
+                {"scope": "homelab", "project": "beta", "x": 300.0, "y": 400.0},
+            ]
+        )
+        assert n == 2
+        rows = g.get_layout()
+        # Sorted by scope/project deterministically.
+        assert [(r["scope"], r["project"], r["x"], r["y"]) for r in rows] == [
+            ("homelab", "beta", 300.0, 400.0),
+            ("work", "alpha", 100.0, 200.0),
+        ]
+        # ``updated_at`` is auto-populated.
+        assert all(r["updated_at"] for r in rows)
+
+    def test_set_layout_upserts_existing_positions(self, tmp_path):
+        g = RelationshipGraph(db_path=tmp_path / "g.db")
+        g.set_layout([{"scope": "work", "project": "x", "x": 1.0, "y": 1.0}])
+        g.set_layout([{"scope": "work", "project": "x", "x": 9.0, "y": 9.0}])
+        rows = g.get_layout()
+        assert len(rows) == 1
+        assert (rows[0]["x"], rows[0]["y"]) == (9.0, 9.0)
+
+    def test_set_layout_skips_invalid_rows(self, tmp_path):
+        g = RelationshipGraph(db_path=tmp_path / "g.db")
+        n = g.set_layout(
+            [
+                {"scope": "work", "project": "ok", "x": 1.0, "y": 2.0},
+                {"scope": "work", "project": "missing-y", "x": 1.0},
+                {"scope": "work", "project": "wrong-types", "x": "a", "y": "b"},
+                {},
+            ]
+        )
+        assert n == 1
+        rows = g.get_layout()
+        assert [r["project"] for r in rows] == ["ok"]
+
+    def test_get_layout_filters_by_allowed_scopes(self, tmp_path):
+        g = RelationshipGraph(db_path=tmp_path / "g.db")
+        g.set_layout(
+            [
+                {"scope": "work", "project": "a", "x": 1.0, "y": 1.0},
+                {"scope": "homelab", "project": "b", "x": 2.0, "y": 2.0},
+            ]
+        )
+        rows = g.get_layout(allowed_scopes={"work"})
+        assert [r["scope"] for r in rows] == ["work"]
+
+    def test_clear_layout_removes_all(self, tmp_path):
+        g = RelationshipGraph(db_path=tmp_path / "g.db")
+        g.set_layout(
+            [
+                {"scope": "work", "project": "a", "x": 1.0, "y": 1.0},
+                {"scope": "work", "project": "b", "x": 2.0, "y": 2.0},
+            ]
+        )
+        removed = g.clear_layout()
+        assert removed == 2
+        assert g.get_layout() == []
+
+    def test_layout_survives_reopen(self, tmp_path):
+        """Positions are persisted across instances of ``RelationshipGraph``
+        as long as the on-disk DB is the same file."""
+        db = tmp_path / "g.db"
+        g1 = RelationshipGraph(db_path=db)
+        g1.set_layout([{"scope": "work", "project": "x", "x": 5.0, "y": 6.0}])
+        # New instance opens the same DB.
+        g2 = RelationshipGraph(db_path=db)
+        rows = g2.get_layout()
+        assert len(rows) == 1
+        assert (rows[0]["x"], rows[0]["y"]) == (5.0, 6.0)

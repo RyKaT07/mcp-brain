@@ -334,6 +334,15 @@ class RelationshipGraph:
             CREATE INDEX IF NOT EXISTS idx_rel_object   ON relationships(object_id);
             CREATE INDEX IF NOT EXISTS idx_rel_pred     ON relationships(predicate);
             CREATE INDEX IF NOT EXISTS idx_rel_temporal ON relationships(valid_from, valid_to);
+
+            CREATE TABLE IF NOT EXISTS graph_layout (
+                scope      TEXT NOT NULL,
+                project    TEXT NOT NULL,
+                x          REAL NOT NULL,
+                y          REAL NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (scope, project)
+            );
             """
         )
         self._conn.commit()
@@ -859,6 +868,96 @@ class RelationshipGraph:
                 }
                 for row in cur.fetchall()
             ]
+
+    # ── Persisted graph layout ──────────────────────────────────
+    #
+    # Force-directed layouts are deterministic but non-trivial to
+    # compute in the browser, especially for 1k+ nodes. Storing
+    # ``(scope, project) → (x, y)`` here lets the panel render the
+    # vault from a stable position on every load and across different
+    # browsers / users opening the same vault. Coordinates are kept
+    # in the same 0..1000 viewBox space the panel renders into so no
+    # transformation is needed on either side.
+
+    def get_layout(self, allowed_scopes: set[str] | None = None) -> list[dict]:
+        """Return persisted node positions.
+
+        Each entry: ``{scope, project, x, y, updated_at}``. Returned
+        in stable order by scope/project. ``allowed_scopes`` filters
+        out positions for files the caller can't read; pass ``None``
+        for unrestricted access.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT scope, project, x, y, updated_at
+                FROM graph_layout
+                ORDER BY scope, project
+                """
+            )
+            rows = cur.fetchall()
+        out: list[dict] = []
+        for row in rows:
+            scope = row[0]
+            if allowed_scopes is not None and scope not in allowed_scopes:
+                continue
+            out.append(
+                {
+                    "scope": scope,
+                    "project": row[1],
+                    "x": float(row[2]),
+                    "y": float(row[3]),
+                    "updated_at": row[4],
+                }
+            )
+        return out
+
+    def set_layout(self, positions: list[dict]) -> int:
+        """Upsert positions in bulk, returning the number written.
+
+        Each entry must carry ``scope``, ``project``, ``x``, ``y``.
+        Missing keys cause the row to be skipped (we don't raise so a
+        single bad client payload doesn't lose the rest).
+        """
+        if not positions:
+            return 0
+        rows: list[tuple[str, str, float, float]] = []
+        for p in positions:
+            scope = p.get("scope")
+            project = p.get("project")
+            x = p.get("x")
+            y = p.get("y")
+            if (
+                not isinstance(scope, str)
+                or not isinstance(project, str)
+                or not isinstance(x, (int, float))
+                or not isinstance(y, (int, float))
+            ):
+                continue
+            rows.append((scope, project, float(x), float(y)))
+        if not rows:
+            return 0
+        with self._lock:
+            self._conn.executemany(
+                """
+                INSERT INTO graph_layout(scope, project, x, y, updated_at)
+                VALUES (?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(scope, project) DO UPDATE SET
+                    x = excluded.x,
+                    y = excluded.y,
+                    updated_at = datetime('now')
+                """,
+                rows,
+            )
+            self._conn.commit()
+        return len(rows)
+
+    def clear_layout(self) -> int:
+        """Drop every persisted position; returns rows removed."""
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM graph_layout")
+            self._conn.commit()
+            return cur.rowcount or 0
 
     def list_files(self, allowed_scopes: set[str] | None = None) -> list[dict]:
         """List every file entity in the graph, optionally filtered by scope.
