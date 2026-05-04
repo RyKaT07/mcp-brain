@@ -182,6 +182,16 @@ class EmbeddingService:
             project = md.stem
             if scope.startswith(("_", ".")):
                 continue
+            # Multi-user knowledge layout has files under
+            # ``knowledge_dir/users/<uid>/<scope>/<file>.md``. Skip the
+            # ``users`` directory at this level — ``bootstrap_all``
+            # iterates per-user and embeds those into the right
+            # per-user stores. Without this guard ``users/<uid>.md``
+            # would never match (it's a directory, not a file), but
+            # any stray ``users/random.md`` would land in the global
+            # store under the wrong scope name.
+            if scope == "users":
+                continue
             files += 1
             existing = store.get_hashes(scope, project)
             if existing:
@@ -194,6 +204,33 @@ class EmbeddingService:
             stats = self.refresh_file(scope, project, content, user_id=user_id)
             embedded += stats["embedded"]
         return {"embedded": embedded, "skipped": skipped, "files": files}
+
+    def bootstrap_all(self) -> dict[str, dict[str, int]]:
+        """Bootstrap the root vault and every per-user vault.
+
+        Walks ``self.knowledge_dir`` (root → global store) and every
+        ``self.knowledge_dir/users/<uid>/`` directory (→ per-user
+        store keyed by ``<uid>``). Returns a mapping of target name
+        (``"root"`` or the user id) to the standard
+        ``{embedded, skipped, files}`` stats.
+
+        Use this on startup of the unified server (``server.py``)
+        which serves multiple users from one process. The bwrap
+        worker (``worker.py``) gets a user-scoped knowledge dir
+        bind-mounted by the manager, so it just calls ``bootstrap``
+        directly.
+        """
+        out: dict[str, dict[str, int]] = {}
+        out["root"] = self.bootstrap(self.knowledge_dir)
+        users_dir = self.knowledge_dir / "users"
+        if users_dir.is_dir():
+            for child in sorted(users_dir.iterdir()):
+                if not child.is_dir():
+                    continue
+                if child.name.startswith((".", "_")):
+                    continue
+                out[child.name] = self.bootstrap(child, user_id=child.name)
+        return out
 
     # ── Query ────────────────────────────────────────────────────
 

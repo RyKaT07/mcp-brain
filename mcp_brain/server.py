@@ -381,7 +381,12 @@ def _build_mcp() -> FastMCP:
     embedding_service = EmbeddingService.create_or_none(KNOWLEDGE_DIR)
     if embedding_service is not None:
         try:
-            stats = embedding_service.bootstrap(KNOWLEDGE_DIR)
+            # Walk root + every users/<uid>/ subdir so multi-user
+            # vaults (yaml tokens with user_id, OAuth) get their
+            # per-user store filled on first start. Patryk's single-
+            # user setup keeps everything at the root and the per-user
+            # leg is a no-op when there's no users/ dir.
+            stats = embedding_service.bootstrap_all()
             logger.info("embeddings bootstrap: %s", stats)
         except Exception:  # noqa: BLE001
             logger.warning("embeddings bootstrap failed", exc_info=True)
