@@ -34,9 +34,11 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
+from mcp_brain.embeddings.service import EmbeddingService
 from mcp_brain.tools._perms import (
     ALL,
     allowed_subscopes,
+    get_current_user_id,
     get_effective_knowledge_dir,
     meter_call,
     require,
@@ -376,8 +378,18 @@ def _write_section(
 # Main registration
 
 
-def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
-    """Register knowledge_maintain and interactive maintain session tools."""
+def register_maintain_tools(
+    mcp: FastMCP,
+    knowledge_dir: Path,
+    embedding_service: EmbeddingService | None = None,
+) -> None:
+    """Register knowledge_maintain and interactive maintain session tools.
+
+    ``embedding_service`` is optional; when present, ``knowledge_maintain``
+    extends its audit with vector-similarity checks (low-coherence
+    chunks, duplicate-suspect pairs across files). When absent, those
+    sections are silently omitted from the report.
+    """
 
     # ------------------------------------------------------------------
     # Original read-only audit tool (unchanged, backwards compatible)
@@ -547,6 +559,20 @@ def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
                 )
 
         # ----------------------------------------------------------------
+        # Pass 4: vector-similarity audit (optional).
+        # ----------------------------------------------------------------
+        coherence_report: dict | None = None
+        if embedding_service is not None:
+            try:
+                coherence_report = embedding_service.audit_coherence(
+                    allowed_scopes=set(allowed) if allowed is not ALL else None,
+                    user_id=get_current_user_id(),
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("audit_coherence failed", exc_info=True)
+                coherence_report = None
+
+        # ----------------------------------------------------------------
         # Build markdown report.
         # ----------------------------------------------------------------
         lines: list[str] = ["# Knowledge Vault Maintenance Report", ""]
@@ -577,9 +603,47 @@ def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
             lines.append("  ✅ No issues found.")
         lines.append("")
 
+        # --- Coherence + duplicate-suspect (optional) ---
+        coherence_count = 0
+        duplicate_count = 0
+        if coherence_report is not None:
+            low = coherence_report.get("low_coherence", []) or []
+            dups = coherence_report.get("duplicate_suspects", []) or []
+            coherence_count = len(low)
+            duplicate_count = len(dups)
+
+            lines.append("## 4. Low-coherence chunks (no close vector neighbours)")
+            if low:
+                for entry in low:
+                    lines.append(
+                        f"  - `{entry['scope']}/{entry['project']}` "
+                        f"§ {entry['heading_path']} — "
+                        f"nearest L2 {entry['nearest_distance']:.3f}"
+                    )
+            else:
+                lines.append("  ✅ Every chunk has a close neighbour.")
+            lines.append("")
+
+            lines.append("## 5. Duplicate-suspect pairs (high vector similarity across files)")
+            if dups:
+                for pair in dups:
+                    a, b = pair["a"], pair["b"]
+                    lines.append(
+                        f"  - `{a['scope']}/{a['project']}` § {a['heading_path']}"
+                        f"  ↔  `{b['scope']}/{b['project']}` § {b['heading_path']}"
+                        f"  (L2 {pair['distance']:.3f})"
+                    )
+            else:
+                lines.append("  ✅ No duplicate-suspect pairs.")
+            lines.append("")
+
         # --- Summary ---
-        total = len(stale_files) + len(broken_refs) + len(
-            [i for i in meta_issues if i.strip().startswith("-")]
+        total = (
+            len(stale_files)
+            + len(broken_refs)
+            + len([i for i in meta_issues if i.strip().startswith("-")])
+            + coherence_count
+            + duplicate_count
         )
         if total == 0:
             lines.append("**Vault is healthy — no issues found.**")
@@ -589,6 +653,9 @@ def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
                 f"Review stale files with `knowledge_read`, fix broken refs with "
                 f"`knowledge_update` or `knowledge_delete`, and update meta.yaml "
                 f"with `meta_update` if needed. "
+                f"Low-coherence and duplicate-suspect entries are vector-based "
+                f"hints — link the orphans into a richer file or merge the "
+                f"duplicates with `knowledge_update`. "
                 f"Or start an interactive session with `maintain_start`."
             )
 

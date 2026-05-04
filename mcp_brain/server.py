@@ -400,7 +400,7 @@ def _build_mcp() -> FastMCP:
         rel_graph=rel_graph,
         embedding_service=embedding_service,
     )
-    register_maintain_tools(mcp, KNOWLEDGE_DIR)
+    register_maintain_tools(mcp, KNOWLEDGE_DIR, embedding_service=embedding_service)
     register_meta_tools(mcp, KNOWLEDGE_DIR)
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
     register_briefing_tools(
