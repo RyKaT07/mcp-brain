@@ -239,3 +239,80 @@ class TestServiceWithFakeEmbedder:
         again = svc.bootstrap()
         assert again["embedded"] == 0
         assert again["skipped"] == 2
+
+    def test_bootstrap_skips_users_dir_at_root(
+        self, tmp_path: Path, fake_embedder
+    ):
+        """Files under ``users/<uid>/`` must not be embedded into the
+        global store as if their parent were a regular scope. They
+        belong in per-user stores and ``bootstrap_all`` handles them.
+        """
+        from mcp_brain.embeddings.service import EmbeddingService
+
+        # One legit root-scope file.
+        root_scope = tmp_path / "homelab"
+        root_scope.mkdir()
+        (root_scope / "alpha.md").write_text("## A\nroot content")
+        # A multi-user vault where files live under users/<uid>/<scope>/.
+        # The OLD bootstrap globbed ``*/*.md`` and never matched these
+        # at depth 3. The new bootstrap explicitly skips ``users`` at
+        # the root level so ``bootstrap_all`` is the only path that
+        # embeds them.
+        users_alpha = tmp_path / "users" / "alice" / "work"
+        users_alpha.mkdir(parents=True)
+        (users_alpha / "deep.md").write_text("## A\nalice content")
+
+        svc = EmbeddingService(
+            knowledge_dir=tmp_path,
+            embedder=fake_embedder,
+            global_store_path=tmp_path / "embeddings.db",
+        )
+        stats = svc.bootstrap()
+        # Only the legit root-scope file is counted; ``users`` skipped.
+        assert stats["files"] == 1
+        assert stats["embedded"] == 1
+
+    def test_bootstrap_all_walks_root_and_each_user(
+        self, tmp_path: Path, fake_embedder
+    ):
+        """Multi-user setup: root vault + ``users/<uid>/`` vaults each
+        get their own bootstrap pass into the right store.
+        """
+        from mcp_brain.embeddings.service import EmbeddingService
+
+        # Root vault — Patryk's single-user knowledge.
+        (tmp_path / "homelab").mkdir()
+        (tmp_path / "homelab" / "alpha.md").write_text("## A\nroot")
+        # Two per-user vaults.
+        (tmp_path / "users" / "alice" / "work").mkdir(parents=True)
+        (tmp_path / "users" / "alice" / "work" / "a.md").write_text(
+            "## A\nalice"
+        )
+        (tmp_path / "users" / "bob" / "school").mkdir(parents=True)
+        (tmp_path / "users" / "bob" / "school" / "b.md").write_text(
+            "## B\nbob1"
+        )
+        (tmp_path / "users" / "bob" / "school" / "c.md").write_text(
+            "## C\nbob2"
+        )
+        # Hidden user dir is skipped (matches the `_`/`.` rule for scopes).
+        (tmp_path / "users" / "_internal" / "x").mkdir(parents=True)
+        (tmp_path / "users" / "_internal" / "x" / "x.md").write_text(
+            "## X\nignored"
+        )
+
+        svc = EmbeddingService(
+            knowledge_dir=tmp_path,
+            embedder=fake_embedder,
+            global_store_path=tmp_path / "embeddings.db",
+        )
+        stats = svc.bootstrap_all()
+        # Three keys: root + two real users.
+        assert set(stats) == {"root", "alice", "bob"}
+        assert stats["root"]["files"] == 1
+        assert stats["alice"]["files"] == 1
+        assert stats["bob"]["files"] == 2
+        # Per-user stores are isolated from the global one.
+        assert svc._global_store.chunk_count() == 1
+        assert svc.store_for("alice").chunk_count() == 1
+        assert svc.store_for("bob").chunk_count() == 2
