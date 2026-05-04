@@ -580,6 +580,64 @@ class TestKnowledgeHistory:
         assert "-100" in captured["cmd"]
 
 
+class TestKnowledgeShowAt:
+    """``knowledge_show_at`` returns historic file content via ``git show``."""
+
+    def _make_file(self, base, scope, project, content="## Notes\n\nSome notes.\n"):
+        d = base / scope
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{project}.md").write_text(content, encoding="utf-8")
+
+    def test_invalid_sha_rejected(self, knowledge_tools):
+        tools, base = knowledge_tools
+        self._make_file(base, "school", "notes")
+        result = tools["knowledge_show_at"]("school", "notes", "not-a-sha")
+        assert result.startswith("Error: invalid commit SHA")
+
+    def test_short_sha_too_short_rejected(self, knowledge_tools):
+        tools, base = knowledge_tools
+        self._make_file(base, "school", "notes")
+        # Length 3 — under the 4-char minimum git requires.
+        result = tools["knowledge_show_at"]("school", "notes", "abc")
+        assert "invalid commit SHA length" in result
+
+    def test_missing_file_returns_error(self, knowledge_tools):
+        tools, base = knowledge_tools
+        # File doesn't exist; helper not called so the SHA passes
+        # validation and we go straight to ``_resolve_file``.
+        result = tools["knowledge_show_at"]("school", "ghost", "abcdef1")
+        # Either ``Error: ...`` or "No knowledge file" depending on
+        # how `_resolve_file` reports it. Tolerate both.
+        assert result.startswith("Error") or "No knowledge file" in result
+
+    def test_no_git_returns_error(self, knowledge_tools):
+        tools, base = knowledge_tools
+        self._make_file(base, "school", "notes")
+        with patch("subprocess.run", side_effect=FileNotFoundError("no git")):
+            result = tools["knowledge_show_at"]("school", "notes", "abc1234")
+        assert result.startswith("Error: git not available")
+
+    def test_git_show_failure_returns_error(self, knowledge_tools):
+        import subprocess
+
+        tools, base = knowledge_tools
+        self._make_file(base, "school", "notes")
+        exc = subprocess.CalledProcessError(128, "git", stderr="bad sha")
+        with patch("subprocess.run", side_effect=exc):
+            result = tools["knowledge_show_at"]("school", "notes", "abc1234")
+        assert result.startswith("Error: commit or file not found")
+
+    def test_returns_historic_content(self, knowledge_tools):
+        tools, base = knowledge_tools
+        self._make_file(base, "school", "notes", "## Now\nlatest")
+        git_result = MagicMock()
+        git_result.returncode = 0
+        git_result.stdout = "## Then\nold body\n"
+        with patch("subprocess.run", return_value=git_result):
+            result = tools["knowledge_show_at"]("school", "notes", "abc1234")
+        assert result == "## Then\nold body\n"
+
+
 class TestKnowledgeTimeline:
     def _make_file(self, base, scope, project, content="## Notes\n\nSome notes.\n"):
         d = base / scope

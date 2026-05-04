@@ -757,6 +757,84 @@ def register_knowledge_tools(
         return output
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
+    def knowledge_show_at(scope: str, project: str, sha: str) -> str:
+        """Return the contents of a knowledge file at a specific commit.
+
+        Used by the panel's Git view to preview a previous version of a
+        file (and, on the panel side, to compute a diff against the
+        current content or hand the historic content back into
+        ``knowledge_update`` as a "restore to this version" operation).
+
+        Returns the raw file contents on success, or a string starting
+        with "Error:" when the SHA is unknown / the file didn't exist
+        at that commit / git is unavailable.
+
+        Args:
+            scope: Category — e.g. 'work', 'school', 'homelab'
+            project: Project/topic name (filename without .md)
+            sha: Commit SHA — short or full hash. Must exist in the
+                 knowledge dir's git repo.
+        """
+        meter_call("knowledge_show_at")
+        try:
+            require(f"knowledge:read:{scope}")
+        except PermissionDenied as e:
+            return f"Error: {e}"
+
+        err = _validate_scope_project(scope, project)
+        if err:
+            return f"Error: {err}"
+
+        # Reject anything that isn't a hex SHA (short or long). Defends
+        # against ``--`` / shell metacharacter injection — git would
+        # error out anyway, but we'd rather reject early.
+        if not sha or not all(c in "0123456789abcdefABCDEF" for c in sha):
+            return "Error: invalid commit SHA"
+        if not (4 <= len(sha) <= 40):
+            return "Error: invalid commit SHA length"
+
+        effective_dir = get_effective_knowledge_dir(knowledge_dir)
+        try:
+            filepath = _resolve_file(effective_dir, scope, project)
+        except ValueError as e:
+            return f"Error: {e}"
+
+        # Path inside the repo, relative to the working dir we run git
+        # from (effective_dir). ``git show`` wants this exact form.
+        try:
+            rel = filepath.relative_to(effective_dir)
+        except ValueError:
+            return "Error: file outside knowledge dir"
+
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "safe.directory=*",
+                    "show",
+                    f"{sha}:{rel.as_posix()}",
+                ],
+                cwd=effective_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except FileNotFoundError:
+            return "Error: git not available"
+        except subprocess.CalledProcessError as exc:
+            logger.info(
+                "git show failed for %s/%s @ %s: %s",
+                scope,
+                project,
+                sha,
+                (exc.stderr or exc.stdout or "<no output>").strip(),
+            )
+            return "Error: commit or file not found at that revision"
+
+        return result.stdout
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def knowledge_timeline(scope: str | None = None, limit: int = 50) -> str:
         """Return a chronological commit log across knowledge files.
 
