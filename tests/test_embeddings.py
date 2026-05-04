@@ -202,6 +202,52 @@ class TestServiceWithFakeEmbedder:
         assert n == 2
         assert service._global_store.chunk_count() == 0
 
+    def test_audit_coherence_empty_store(self, service):
+        out = service.audit_coherence()
+        assert out["chunk_count"] == 0
+        assert out["low_coherence"] == []
+        assert out["duplicate_suspects"] == []
+
+    def test_audit_coherence_flags_orphan_chunks(self, service):
+        # Three files. The fake embedder is sha256-based so each
+        # distinct text maps to a deterministic point in [0,1)^8 with
+        # no clustering. With the default low_coherence_distance of
+        # 1.0 (cos≈0.5 on normalised vectors) and these random-ish
+        # vectors, none should fall under the threshold — every chunk
+        # has plenty of neighbours.
+        service.refresh_file("work", "a", "## A\nalpha content unique")
+        service.refresh_file("work", "b", "## B\nbeta content unique")
+        service.refresh_file("work", "c", "## C\ngamma content unique")
+        out = service.audit_coherence(low_coherence_distance=0.0)
+        # Threshold 0.0 forces every chunk to qualify as low-coherence
+        # since dist > 0 between distinct sha256 buckets.
+        assert out["chunk_count"] == 3
+        assert len(out["low_coherence"]) == 3
+
+    def test_audit_coherence_flags_cross_file_duplicates(self, service):
+        # Same text in two different files → identical fake embedding
+        # → distance 0. With duplicate_distance high enough they get
+        # flagged as a duplicate-suspect pair.
+        service.refresh_file("work", "a", "## Topic\nshared body")
+        service.refresh_file("homelab", "a", "## Topic\nshared body")
+        # Plus a non-duplicate so we know we filter intelligently.
+        service.refresh_file("school", "a", "## Topic\nunrelated body")
+        out = service.audit_coherence(duplicate_distance=0.01)
+        # Exactly one cross-file duplicate pair.
+        assert len(out["duplicate_suspects"]) == 1
+        pair = out["duplicate_suspects"][0]
+        scopes = sorted([pair["a"]["scope"], pair["b"]["scope"]])
+        assert scopes == ["homelab", "work"]
+
+    def test_audit_coherence_skips_same_file_pairs(self, service):
+        # Two chunks with identical text in the same file are not a
+        # cross-file duplicate, so the rule shouldn't fire.
+        service.refresh_file(
+            "work", "x", "## A\nshared body\n## B\nshared body"
+        )
+        out = service.audit_coherence(duplicate_distance=0.01)
+        assert out["duplicate_suspects"] == []
+
     def test_per_user_store_is_isolated(self, service, tmp_path: Path):
         # Same scope+project, different user_id → separate store.
         (tmp_path / "users" / "alice").mkdir(parents=True)
