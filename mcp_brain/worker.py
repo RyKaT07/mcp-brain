@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -183,7 +184,33 @@ def _build_worker_mcp():
     nc_pass = os.getenv("NEXTCLOUD_PASSWORD", "")
     if nc_url and nc_user and nc_pass:
         from mcp_brain.tools.nextcloud import register_nextcloud_tools
-        register_nextcloud_tools(mcp, nc_url, nc_user, nc_pass)
+
+        # Path scoping is optional. NEXTCLOUD_ROOT_PATH defaults to "" (no
+        # prefix), NEXTCLOUD_SCOPE_PATHS to no per-scope overrides — both
+        # cases reproduce the legacy "whole Nextcloud account" behaviour.
+        nc_root = os.getenv("NEXTCLOUD_ROOT_PATH", "")
+        nc_scope_paths_raw = os.getenv("NEXTCLOUD_SCOPE_PATHS", "")
+        nc_scope_paths: dict[str, str] = {}
+        if nc_scope_paths_raw:
+            try:
+                parsed = json.loads(nc_scope_paths_raw)
+                if isinstance(parsed, dict):
+                    nc_scope_paths = {
+                        str(k): str(v) for k, v in parsed.items() if v
+                    }
+            except json.JSONDecodeError:
+                logger.warning(
+                    "worker: NEXTCLOUD_SCOPE_PATHS is not valid JSON; ignoring"
+                )
+
+        register_nextcloud_tools(
+            mcp,
+            nc_url,
+            nc_user,
+            nc_pass,
+            root_path=nc_root,
+            scope_paths=nc_scope_paths,
+        )
 
     gcal_client = os.getenv("GOOGLE_CLIENT_ID", "")
     gcal_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")

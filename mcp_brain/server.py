@@ -23,6 +23,7 @@ which is why the previous `Mount('/', sse_app())` trick worked without
 this gymnastics — SSE is now deprecated in the MCP spec, so we migrated.
 """
 
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -95,6 +96,8 @@ TODOIST_API_KEY = os.getenv("TODOIST_API_KEY", "")
 NEXTCLOUD_URL = os.getenv("NEXTCLOUD_URL", "")
 NEXTCLOUD_USER = os.getenv("NEXTCLOUD_USER", "")
 NEXTCLOUD_PASSWORD = os.getenv("NEXTCLOUD_PASSWORD", "")
+NEXTCLOUD_ROOT_PATH = os.getenv("NEXTCLOUD_ROOT_PATH", "")
+NEXTCLOUD_SCOPE_PATHS = os.getenv("NEXTCLOUD_SCOPE_PATHS", "")
 TRELLO_API_KEY = os.getenv("TRELLO_API_KEY", "")
 TRELLO_API_TOKEN = os.getenv("TRELLO_API_TOKEN", "")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
@@ -240,6 +243,27 @@ def _load_briefing_trigger(knowledge_dir: Path) -> str:
     except OSError:
         return ""
     return _extract_h2_section(content, "Read discipline — don't over-fetch")
+
+
+def _parse_scope_paths(raw: str) -> dict[str, str]:
+    """Parse the NEXTCLOUD_SCOPE_PATHS env var into a {scope: subpath} dict.
+
+    The Panel writes this as a JSON object so we don't have to invent a
+    cross-process key/value escaping scheme on top of the dotenv format
+    (scope names can contain spaces, slashes, dots…). Empty or invalid
+    input is silently treated as "no per-scope config" — the user simply
+    falls back to root_path or no prefix at all.
+    """
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("NEXTCLOUD_SCOPE_PATHS is not valid JSON; ignoring")
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(k): str(v) for k, v in parsed.items() if v}
 
 
 # Module-level stores so both _build_mcp() and _build_app() share the same
@@ -422,6 +446,8 @@ def _build_mcp() -> FastMCP:
             nextcloud_creds["NEXTCLOUD_URL"],
             nextcloud_creds["NEXTCLOUD_USER"],
             nextcloud_creds["NEXTCLOUD_PASSWORD"],
+            root_path=NEXTCLOUD_ROOT_PATH,
+            scope_paths=_parse_scope_paths(NEXTCLOUD_SCOPE_PATHS),
         )
 
     trello_creds = _get_integration_creds("trello")
