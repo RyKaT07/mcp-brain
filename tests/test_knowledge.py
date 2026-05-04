@@ -638,6 +638,70 @@ class TestKnowledgeShowAt:
         assert result == "## Then\nold body\n"
 
 
+class TestKnowledgeRestoreAt:
+    """``knowledge_restore_at`` writes historic file content via ``git
+    show`` and re-runs the post-update side-effects (index, graph,
+    embeddings).
+    """
+
+    def _make_file(self, base, scope, project, content="## Notes\n\nlatest.\n"):
+        d = base / scope
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{project}.md").write_text(content, encoding="utf-8")
+
+    def test_invalid_sha_rejected(self, knowledge_tools):
+        tools, base = knowledge_tools
+        self._make_file(base, "school", "notes")
+        result = tools["knowledge_restore_at"]("school", "notes", "not-a-sha")
+        assert "invalid commit SHA" in result
+
+    def test_no_git_returns_error(self, knowledge_tools):
+        tools, base = knowledge_tools
+        self._make_file(base, "school", "notes")
+        with patch("subprocess.run", side_effect=FileNotFoundError("no git")):
+            result = tools["knowledge_restore_at"]("school", "notes", "abc1234")
+        assert result.startswith("Error: git not available")
+
+    def test_git_show_failure_returns_error(self, knowledge_tools):
+        import subprocess
+
+        tools, base = knowledge_tools
+        self._make_file(base, "school", "notes")
+        exc = subprocess.CalledProcessError(128, "git", stderr="bad sha")
+        with patch("subprocess.run", side_effect=exc):
+            result = tools["knowledge_restore_at"]("school", "notes", "abc1234")
+        assert result.startswith("Error: commit or file not found")
+
+    def test_successful_restore_writes_historic_content(self, knowledge_tools):
+        tools, base = knowledge_tools
+        self._make_file(base, "school", "notes", "## Now\nlatest content\n")
+        filepath = base / "school" / "notes.md"
+
+        # First subprocess call is `git show` (returns historic content);
+        # subsequent calls are the auto-commit (`git add` + `git commit`)
+        # which we let succeed silently.
+        show_result = MagicMock()
+        show_result.returncode = 0
+        show_result.stdout = "## Then\nold body\n"
+
+        ok_result = MagicMock()
+        ok_result.returncode = 0
+        ok_result.stdout = ""
+
+        with patch(
+            "subprocess.run",
+            side_effect=[show_result, ok_result, ok_result],
+        ):
+            result = tools["knowledge_restore_at"](
+                "school", "notes", "abc1234deadbeef"
+            )
+
+        assert "Restored" in result
+        assert "abc1234" in result
+        # File was overwritten with historic content.
+        assert filepath.read_text(encoding="utf-8") == "## Then\nold body\n"
+
+
 class TestKnowledgeTimeline:
     def _make_file(self, base, scope, project, content="## Notes\n\nSome notes.\n"):
         d = base / scope
