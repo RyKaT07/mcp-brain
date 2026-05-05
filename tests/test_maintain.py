@@ -257,3 +257,118 @@ class TestMaxQuestionsCap:
 
     def test_max_questions_constant(self):
         assert MAX_QUESTIONS == 10
+
+
+# ---------------------------------------------------------------------------
+# maintain_last_run + audit cache
+
+
+class _CapturingFastMCP:
+    """Minimal MCP stand-in that captures registered tool functions by name."""
+
+    def __init__(self):
+        self._tools: dict = {}
+
+    def tool(self, description=None, **kwargs):
+        def decorator(fn):
+            self._tools[fn.__name__] = fn
+            return fn
+
+        return decorator
+
+
+@pytest.fixture
+def maintain_tools(tmp_path):
+    from mcp_brain.tools.maintain import register_maintain_tools
+
+    mcp = _CapturingFastMCP()
+    register_maintain_tools(mcp, tmp_path)
+    return mcp._tools, tmp_path
+
+
+class TestAuditCachePath:
+    def test_root_cache_path(self, tmp_path: Path):
+        from mcp_brain.tools.maintain import _audit_cache_path
+
+        assert _audit_cache_path(tmp_path, None) == (
+            tmp_path / "_index" / "last_audit.json"
+        )
+
+    def test_per_user_cache_path(self, tmp_path: Path):
+        from mcp_brain.tools.maintain import _audit_cache_path
+
+        assert _audit_cache_path(tmp_path, "alice") == (
+            tmp_path / "users" / "alice" / "_index" / "last_audit.json"
+        )
+
+
+class TestMaintainLastRun:
+    def test_first_call_runs_audit_and_writes_cache(
+        self, maintain_tools, tmp_path: Path
+    ):
+        tools, base = maintain_tools
+        (base / "homelab").mkdir()
+        (base / "homelab" / "alpha.md").write_text(
+            "## Overview\nfresh", encoding="utf-8"
+        )
+        with patch(
+            "subprocess.run", side_effect=FileNotFoundError("no git")
+        ):
+            raw = tools["maintain_last_run"]()
+        out = json.loads(raw)
+        assert "report" in out
+        assert "Knowledge Vault Maintenance Report" in out["report"]
+        assert out["refreshed"] is True
+        cache = base / "_index" / "last_audit.json"
+        assert cache.exists()
+        cached = json.loads(cache.read_text(encoding="utf-8"))
+        assert cached["report"] == out["report"]
+
+    def test_second_call_returns_cached(
+        self, maintain_tools, tmp_path: Path
+    ):
+        tools, base = maintain_tools
+        (base / "homelab").mkdir()
+        (base / "homelab" / "alpha.md").write_text(
+            "## A\n", encoding="utf-8"
+        )
+        with patch(
+            "subprocess.run", side_effect=FileNotFoundError("no git")
+        ):
+            first = json.loads(tools["maintain_last_run"]())
+            (base / "homelab" / "beta.md").write_text(
+                "## B\n", encoding="utf-8"
+            )
+            second = json.loads(tools["maintain_last_run"]())
+        assert second["refreshed"] is False
+        assert second["report"] == first["report"]
+        assert second["timestamp"] == first["timestamp"]
+
+    def test_force_bypasses_cache(self, maintain_tools, tmp_path: Path):
+        tools, base = maintain_tools
+        (base / "homelab").mkdir()
+        (base / "homelab" / "a.md").write_text("## A\n", encoding="utf-8")
+        with patch(
+            "subprocess.run", side_effect=FileNotFoundError("no git")
+        ):
+            first = json.loads(tools["maintain_last_run"]())
+            second = json.loads(tools["maintain_last_run"](force=True))
+        assert first["refreshed"] is True
+        assert second["refreshed"] is True
+
+    def test_envelope_shape(self, maintain_tools, tmp_path: Path):
+        tools, base = maintain_tools
+        (base / "homelab").mkdir()
+        (base / "homelab" / "a.md").write_text("## A\n", encoding="utf-8")
+        with patch(
+            "subprocess.run", side_effect=FileNotFoundError("no git")
+        ):
+            raw = tools["maintain_last_run"]()
+        out = json.loads(raw)
+        assert set(out.keys()) == {
+            "timestamp",
+            "report",
+            "refreshed",
+            "ttl_seconds",
+        }
+        assert out["ttl_seconds"] == 24 * 3600
