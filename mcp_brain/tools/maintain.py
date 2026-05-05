@@ -60,6 +60,21 @@ SESSION_FILENAME = ".maintain_session.json"
 MAX_QUESTIONS = 10
 BATCH_SIZE = 5
 
+# Where the cached audit JSON lives. Per-user setups land under
+# ``users/<uid>/_index/`` so a multi-tenant brain doesn't blend
+# tenant data into one cache file.
+LAST_AUDIT_FILENAME = "last_audit.json"
+LAST_AUDIT_TTL_SECONDS = 24 * 3600
+
+
+def _audit_cache_path(knowledge_dir: Path, user_id: str | None) -> Path:
+    """Return the per-user audit-cache JSON path."""
+    if user_id:
+        return (
+            knowledge_dir / "users" / user_id / "_index" / LAST_AUDIT_FILENAME
+        )
+    return knowledge_dir / "_index" / LAST_AUDIT_FILENAME
+
 
 # ---------------------------------------------------------------------------
 # Session helpers
@@ -660,6 +675,86 @@ def register_maintain_tools(
             )
 
         return "\n".join(lines)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
+    def maintain_last_run(
+        force: bool = False,
+        scope: str | None = None,
+        stale_days: int = 90,
+    ) -> str:
+        """Return the last cached vault audit, refreshing on demand.
+
+        Lazy-cron pattern: read the JSON cache at
+        ``<knowledge>/_index/last_audit.json`` (per-user under
+        ``users/<uid>/_index/`` for multi-tenant brains). When the
+        cache is missing or older than 24h — or when ``force=True`` —
+        re-runs ``knowledge_maintain`` synchronously and writes the
+        result back.
+
+        Output is a JSON envelope so the panel can render the
+        last-run timestamp alongside the markdown report:
+
+        ``{"timestamp": "<iso8601>", "report": "<markdown>",
+            "refreshed": <bool>, "ttl_seconds": <int>}``
+
+        Args:
+            force: When True, ignore the cache TTL and re-run now.
+            scope: Optional scope filter forwarded to knowledge_maintain.
+            stale_days: Stale threshold for the 'staleness' audit
+                section (forwarded to knowledge_maintain).
+        """
+        meter_call("maintain_last_run")
+
+        user_id = get_current_user_id()
+        cache_path = _audit_cache_path(knowledge_dir, user_id)
+        now = datetime.now(timezone.utc)
+
+        cached: dict | None = None
+        last: datetime | None = None
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            ts = cached.get("timestamp", "") if cached else ""
+            if ts:
+                last = datetime.fromisoformat(ts)
+        except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError):
+            cached = None
+            last = None
+
+        stale = (
+            force
+            or last is None
+            or (now - last).total_seconds() > LAST_AUDIT_TTL_SECONDS
+        )
+
+        if stale:
+            report = knowledge_maintain(scope=scope, stale_days=stale_days)
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(
+                    json.dumps(
+                        {"timestamp": now.isoformat(), "report": report},
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                logger.warning(
+                    "maintain_last_run: cache write failed: %s", exc
+                )
+            last = now
+            refreshed = True
+        else:
+            report = (cached or {}).get("report", "")
+            refreshed = False
+
+        return json.dumps(
+            {
+                "timestamp": (last or now).isoformat(),
+                "report": report,
+                "refreshed": refreshed,
+                "ttl_seconds": LAST_AUDIT_TTL_SECONDS,
+            }
+        )
 
     # ------------------------------------------------------------------
     # Interactive session tools
