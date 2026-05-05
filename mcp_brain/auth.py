@@ -63,6 +63,16 @@ class TokenEntry(BaseModel):
             "Omit for Patryk's single-user setup (backward-compatible default)."
         ),
     )
+    plan: str | None = Field(
+        default=None,
+        description=(
+            "Subscription tier — one of free / trial / personal / pro / tester. "
+            "Maps to the cgroup quota tuple applied at worker spawn time "
+            "(see mcp_brain.isolation.quotas.PLAN_QUOTAS). Omit / null falls "
+            "back to the free-tier defaults so a misconfigured token never "
+            "accidentally hands out pro-tier resources."
+        ),
+    )
 
 
 class AuthConfig(BaseModel):
@@ -168,6 +178,21 @@ class YamlTokenVerifier(TokenVerifier):
             client_id=entry.id,
             scopes=list(entry.scopes),
         )
+
+    def plan_for_user_id(self, user_id: str) -> str | None:
+        """Look up the subscription plan for a given user_id.
+
+        Walks the live token index (so the lookup honours hot-reload)
+        and returns the ``plan`` field from the first matching entry.
+        Falls back to ``None`` when no token carries that user_id, in
+        which case the caller (typically the cgroup setup) will use
+        the free-tier defaults.
+        """
+        with self._lock:
+            for entry in self._index.values():
+                if entry.user_id == user_id:
+                    return entry.plan
+        return None
 
     # ------------------------------------------------------------------
     # Internal reload machinery
