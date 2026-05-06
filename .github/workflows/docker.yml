@@ -42,6 +42,25 @@ jobs:
           # deploy host; skip it here, the deploy host runs the rest.
           pytest -x -q --ignore=tests/test_isolation.py
 
+      - name: pip-audit (PyPI advisories)
+        # Symmetric to the panel's `npm audit --audit-level=high`
+        # gate. --strict makes pip-audit exit non-zero on any vuln
+        # so build/push is blocked when a CVE shows up in the dep
+        # tree.
+        #
+        # Pip self-vulns: setup-python ships the slim image's stock
+        # pip, which currently carries CVE-2025-8869 + CVE-2026-1703
+        # + CVE-2026-6357 (all fixed in pip 26.1) plus CVE-2026-3219
+        # (no upstream fix yet). We upgrade pip first so the fixed
+        # three drop out, then explicitly ignore the pending one
+        # with --ignore-vuln so the gate doesn't go red on every
+        # build until the pip team ships the fix. Drop the ignore
+        # once pip > 26.x with the patch lands.
+        run: |
+          pip install --upgrade pip
+          pip install pip-audit
+          pip-audit --strict --ignore-vuln CVE-2026-3219
+
   build:
     runs-on: ubuntu-latest
     needs: test
