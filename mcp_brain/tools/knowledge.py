@@ -17,6 +17,7 @@ from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.embeddings.service import EmbeddingService
+from mcp_brain import graph_cache
 from mcp_brain.graph import RelationshipGraph
 from mcp_brain.rate_limit import RateLimiter
 from mcp_brain.search import SearchIndex
@@ -391,6 +392,12 @@ def register_knowledge_tools(
                             project,
                             exc_info=True,
                         )
+
+                # Drop the cached knowledge_graph payload for this user
+                # — file/edge/relation counts have changed and the next
+                # panel poll must see the update, not a 60-second-stale
+                # snapshot.
+                graph_cache.invalidate(_user_id)
 
                 return f"Updated {scope}/{project} § {section}"
             finally:
@@ -966,6 +973,8 @@ def register_knowledge_tools(
                             exc_info=True,
                         )
 
+                graph_cache.invalidate(_user_id)
+
                 return (
                     f"Restored {scope}/{project} to {short_sha}. "
                     f"Use knowledge_undo to revert this restore."
@@ -1209,6 +1218,8 @@ def register_knowledge_tools(
                     project,
                     exc_info=True,
                 )
+
+        graph_cache.invalidate(_user_id)
 
         return f"Deleted {scope}/{project}"
 
