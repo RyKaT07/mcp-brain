@@ -163,19 +163,40 @@ class EmbeddingService:
         *,
         user_id: str | None = None,
     ) -> dict[str, int]:
-        """Walk a knowledge directory and (re-)embed any file that has
-        zero chunks in the store. Idempotent: existing chunks are kept.
+        """Walk a knowledge directory and reconcile every markdown file
+        with the embedding store.
 
-        For incremental rebuilds the diff-aware refresh in
-        ``refresh_file`` handles changed content. ``bootstrap`` is the
-        one-time fill on a fresh DB.
+        The previous implementation skipped any file that already had
+        chunks recorded — a fast no-op on a fresh DB, but it missed
+        edits that landed while the brain was offline. Files modified
+        outside the live ``refresh_file`` hook (manual edit, git pull,
+        Syncthing sync into ``knowledge/``) would silently keep stale
+        embeddings until the next in-process update touched the same
+        section.
+
+        New behaviour: always read the file and run ``refresh_file``,
+        which is already diff-aware (it hashes per-chunk and only
+        re-embeds the chunks whose ``content_hash`` changed). For
+        unchanged files this is essentially free — the cost is one
+        ``read_text`` plus chunking; embeddings are not recomputed.
+
+        Counters returned:
+
+        - ``embedded`` — chunks that the model actually re-encoded
+          (new files + changed sections).
+        - ``skipped`` — files where every chunk hashed to the existing
+          stored hash AND nothing was removed (true no-op).
+        - ``refreshed`` — files where at least one chunk was embedded
+          or one chunk was removed; useful as the "stale fixed"
+          counter on startup logs.
+        - ``files`` — total markdown files visited.
         """
         base = Path(knowledge_dir) if knowledge_dir is not None else self.knowledge_dir
-        store = self.store_for(user_id)
+        if not base.exists():
+            return {"embedded": 0, "skipped": 0, "refreshed": 0, "files": 0}
         embedded = 0
         skipped = 0
-        if not base.exists():
-            return {"embedded": 0, "skipped": 0, "files": 0}
+        refreshed = 0
         files = 0
         for md in base.glob("*/*.md"):
             scope = md.parent.name
@@ -193,17 +214,22 @@ class EmbeddingService:
             if scope == "users":
                 continue
             files += 1
-            existing = store.get_hashes(scope, project)
-            if existing:
-                skipped += 1
-                continue
             try:
                 content = md.read_text(encoding="utf-8")
             except OSError:
                 continue
             stats = self.refresh_file(scope, project, content, user_id=user_id)
             embedded += stats["embedded"]
-        return {"embedded": embedded, "skipped": skipped, "files": files}
+            if stats["embedded"] == 0 and stats["removed"] == 0:
+                skipped += 1
+            else:
+                refreshed += 1
+        return {
+            "embedded": embedded,
+            "skipped": skipped,
+            "refreshed": refreshed,
+            "files": files,
+        }
 
     def bootstrap_all(self) -> dict[str, dict[str, int]]:
         """Bootstrap the root vault and every per-user vault.
