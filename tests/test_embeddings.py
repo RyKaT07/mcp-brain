@@ -362,3 +362,73 @@ class TestServiceWithFakeEmbedder:
         assert svc._global_store.chunk_count() == 1
         assert svc.store_for("alice").chunk_count() == 1
         assert svc.store_for("bob").chunk_count() == 2
+
+    def test_bootstrap_re_embeds_stale_file_modified_offline(
+        self, tmp_path: Path, fake_embedder
+    ):
+        """If a markdown file is edited while the brain is offline (manual
+        edit, git pull, Syncthing), the next bootstrap MUST detect the
+        per-chunk hash drift and re-embed the changed sections — not
+        skip the file because it already has chunks.
+        """
+        from mcp_brain.embeddings.service import EmbeddingService
+
+        scope = tmp_path / "homelab"
+        scope.mkdir()
+        target = scope / "alpha.md"
+        target.write_text("## A\noriginal content")
+
+        svc = EmbeddingService(
+            knowledge_dir=tmp_path,
+            embedder=fake_embedder,
+            global_store_path=tmp_path / "embeddings.db",
+        )
+        first = svc.bootstrap()
+        assert first["files"] == 1
+        assert first["embedded"] == 1
+        assert first["refreshed"] == 1
+        assert first["skipped"] == 0
+
+        # Mutate the file out-of-band, then bootstrap again.
+        target.write_text("## A\ncompletely different body")
+        second = svc.bootstrap()
+
+        assert second["files"] == 1
+        # The content_hash changed → the chunk must be re-embedded.
+        assert second["embedded"] == 1
+        assert second["refreshed"] == 1
+        assert second["skipped"] == 0
+
+        # And a third pass with no changes is a true no-op again.
+        third = svc.bootstrap()
+        assert third["embedded"] == 0
+        assert third["skipped"] == 1
+        assert third["refreshed"] == 0
+
+    def test_bootstrap_drops_chunks_for_removed_section(
+        self, tmp_path: Path, fake_embedder
+    ):
+        """A section deleted from the file while the brain was offline
+        must have its chunks removed by bootstrap, not orphaned."""
+        from mcp_brain.embeddings.service import EmbeddingService
+
+        scope = tmp_path / "homelab"
+        scope.mkdir()
+        target = scope / "alpha.md"
+        target.write_text("## A\nfirst\n\n## B\nsecond")
+
+        svc = EmbeddingService(
+            knowledge_dir=tmp_path,
+            embedder=fake_embedder,
+            global_store_path=tmp_path / "embeddings.db",
+        )
+        svc.bootstrap()
+        store = svc._global_store
+        assert store.chunk_count() == 2
+
+        # Delete section B out-of-band.
+        target.write_text("## A\nfirst")
+        stats = svc.bootstrap()
+        assert stats["refreshed"] == 1
+        assert stats["embedded"] == 0  # A unchanged
+        assert store.chunk_count() == 1
