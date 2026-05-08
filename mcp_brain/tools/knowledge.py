@@ -67,10 +67,23 @@ def _git_commit(knowledge_dir: Path, filepath: Path, message: str) -> None:
     `git` binary is expected in stdio dev mode where the server runs
     outside the container. There the auto-commit feature is opt-in
     anyway and a missing binary is not a configuration bug.
+
+    Both ``git add`` and ``git commit`` are invoked with
+    ``-c safe.directory=*`` for the same reason ``knowledge_history`` /
+    ``knowledge_timeline`` already do: git refuses to operate on a
+    repository whose working tree owner differs from the current
+    process uid. On a multi-tenant brain with bind-mounted volumes
+    the panel-owned files inside ``users/<uid>/`` may end up
+    ``root:root`` while the brain process runs as ``mcpbrain`` (uid
+    1000); without ``safe.directory=*`` git aborts with `'detected
+    dubious ownership in repository'` and every ``knowledge_update``
+    silently leaves the file uncommitted (panel timeline never sees
+    it). Read paths had the flag, write paths didn't — this PR brings
+    them in sync.
     """
     try:
         add_result = subprocess.run(
-            ["git", "add", str(filepath)],
+            ["git", "-c", "safe.directory=*", "add", str(filepath)],
             cwd=knowledge_dir,
             capture_output=True,
             text=True,
@@ -84,7 +97,7 @@ def _git_commit(knowledge_dir: Path, filepath: Path, message: str) -> None:
             return  # don't try to commit something we couldn't stage
 
         commit_result = subprocess.run(
-            ["git", "commit", "-m", message, "--", str(filepath)],
+            ["git", "-c", "safe.directory=*", "commit", "-m", message, "--", str(filepath)],
             cwd=knowledge_dir,
             capture_output=True,
             text=True,
@@ -1168,7 +1181,7 @@ def register_knowledge_tools(
         # not stage a removed file — only `git rm` stages deletions.
         try:
             rm_result = subprocess.run(
-                ["git", "rm", "--cached", "--force", str(filepath)],
+                ["git", "-c", "safe.directory=*", "rm", "--cached", "--force", str(filepath)],
                 cwd=effective_dir,
                 capture_output=True,
                 text=True,
@@ -1181,7 +1194,7 @@ def register_knowledge_tools(
                 )
             else:
                 commit_result = subprocess.run(
-                    ["git", "commit", "-m", f"delete {scope}/{project}"],
+                    ["git", "-c", "safe.directory=*", "commit", "-m", f"delete {scope}/{project}"],
                     cwd=effective_dir,
                     capture_output=True,
                     text=True,
@@ -1458,14 +1471,14 @@ def register_knowledge_tools(
                 add_targets.append(str(f))
 
             add_result = subprocess.run(
-                ["git", "add"] + add_targets,
+                ["git", "-c", "safe.directory=*", "add"] + add_targets,
                 cwd=effective_dir,
                 capture_output=True,
                 text=True,
             )
             # Also stage the old dir deletion (git add won't pick up removals).
             subprocess.run(
-                ["git", "rm", "-r", "--cached", "--ignore-unmatch", str(old_dir)],
+                ["git", "-c", "safe.directory=*", "rm", "-r", "--cached", "--ignore-unmatch", str(old_dir)],
                 cwd=effective_dir,
                 capture_output=True,
                 text=True,
@@ -1473,7 +1486,7 @@ def register_knowledge_tools(
 
             if add_result.returncode == 0:
                 commit_result = subprocess.run(
-                    ["git", "commit", "-m", f"rename scope {safe_old} → {safe_new}"],
+                    ["git", "-c", "safe.directory=*", "commit", "-m", f"rename scope {safe_old} → {safe_new}"],
                     cwd=effective_dir,
                     capture_output=True,
                     text=True,
