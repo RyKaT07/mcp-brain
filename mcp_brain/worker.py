@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -92,14 +93,18 @@ def _build_worker_mcp():
 
     from mcp_brain.graph import RelationshipGraph
     from mcp_brain.search import SearchIndex
+    from mcp_brain.embeddings.service import EmbeddingService
     from mcp_brain.tools import _perms
     from mcp_brain.tools.briefing import register_briefing_tools
     from mcp_brain.tools.graph import register_graph_tools
     from mcp_brain.tools.inbox import register_inbox_tools
     from mcp_brain.tools.knowledge import register_knowledge_tools
+    from mcp_brain.tools.knowledge_graph_tool import register_knowledge_graph_tool
+    from mcp_brain.tools.layout import register_layout_tools
     from mcp_brain.tools.maintain import register_maintain_tools
     from mcp_brain.tools.meta import register_meta_tools
     from mcp_brain.tools.search import register_search_tools
+    from mcp_brain.tools.semantic import register_semantic_tools
     from mcp_brain.tools.wake import register_wake_tools
 
     from mcp.server.transport_security import TransportSecuritySettings
@@ -135,13 +140,34 @@ def _build_worker_mcp():
     search_index = SearchIndex(db_path=STATE_DIR / "search.db")
     rel_graph = RelationshipGraph(db_path=STATE_DIR / "graph.db")
 
-    register_knowledge_tools(mcp, KNOWLEDGE_DIR, search_index=search_index, rel_graph=rel_graph)
-    register_maintain_tools(mcp, KNOWLEDGE_DIR)
+    # Embedding service is optional — when fastembed / sqlite-vec aren't
+    # available, ``create_or_none`` returns None and semantic search /
+    # semantic graph edges silently degrade. ``bootstrap`` runs the
+    # diff-aware re-embed over the user's vault on startup.
+    embedding_service = EmbeddingService.create_or_none(KNOWLEDGE_DIR)
+    if embedding_service is not None:
+        try:
+            stats = embedding_service.bootstrap(KNOWLEDGE_DIR)
+            logger.info("worker embeddings bootstrap: %s", stats)
+        except Exception:  # noqa: BLE001
+            logger.warning("worker embeddings bootstrap failed", exc_info=True)
+
+    register_knowledge_tools(
+        mcp,
+        KNOWLEDGE_DIR,
+        search_index=search_index,
+        rel_graph=rel_graph,
+        embedding_service=embedding_service,
+    )
+    register_maintain_tools(mcp, KNOWLEDGE_DIR, embedding_service=embedding_service)
     register_meta_tools(mcp, KNOWLEDGE_DIR)
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
     register_briefing_tools(mcp, KNOWLEDGE_DIR)
     register_search_tools(mcp, KNOWLEDGE_DIR, search_index)
     register_graph_tools(mcp, KNOWLEDGE_DIR, rel_graph)
+    register_knowledge_graph_tool(mcp, KNOWLEDGE_DIR, rel_graph, embedding_service)
+    register_layout_tools(mcp, KNOWLEDGE_DIR, rel_graph)
+    register_semantic_tools(mcp, KNOWLEDGE_DIR, embedding_service)
 
     # ── Integration tools (conditional on env vars) ────────────────────────
     todoist_key = os.getenv("TODOIST_API_KEY", "")
@@ -160,7 +186,33 @@ def _build_worker_mcp():
     nc_pass = os.getenv("NEXTCLOUD_PASSWORD", "")
     if nc_url and nc_user and nc_pass:
         from mcp_brain.tools.nextcloud import register_nextcloud_tools
-        register_nextcloud_tools(mcp, nc_url, nc_user, nc_pass)
+
+        # Path scoping is optional. NEXTCLOUD_ROOT_PATH defaults to "" (no
+        # prefix), NEXTCLOUD_SCOPE_PATHS to no per-scope overrides — both
+        # cases reproduce the legacy "whole Nextcloud account" behaviour.
+        nc_root = os.getenv("NEXTCLOUD_ROOT_PATH", "")
+        nc_scope_paths_raw = os.getenv("NEXTCLOUD_SCOPE_PATHS", "")
+        nc_scope_paths: dict[str, str] = {}
+        if nc_scope_paths_raw:
+            try:
+                parsed = json.loads(nc_scope_paths_raw)
+                if isinstance(parsed, dict):
+                    nc_scope_paths = {
+                        str(k): str(v) for k, v in parsed.items() if v
+                    }
+            except json.JSONDecodeError:
+                logger.warning(
+                    "worker: NEXTCLOUD_SCOPE_PATHS is not valid JSON; ignoring"
+                )
+
+        register_nextcloud_tools(
+            mcp,
+            nc_url,
+            nc_user,
+            nc_pass,
+            root_path=nc_root,
+            scope_paths=nc_scope_paths,
+        )
 
     gcal_client = os.getenv("GOOGLE_CLIENT_ID", "")
     gcal_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")

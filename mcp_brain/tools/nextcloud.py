@@ -5,6 +5,24 @@ NEXTCLOUD_URL, NEXTCLOUD_USER, and NEXTCLOUD_PASSWORD env vars.
 If any is missing, tools are not registered and the server starts
 normally without file access.
 
+Optional path scoping
+---------------------
+Two extra knobs let the user keep tools focused on the right corner
+of their Nextcloud — both purely additive, both default-off:
+
+- ``root_path``: applied to every browse/read call when no per-scope
+  override matches. ``"" `` (the default) means the whole Nextcloud
+  root is exposed.
+- ``scope_paths``: ``{scope_name: subpath}`` map. When the caller
+  passes ``scope="school"`` and ``scope_paths`` has an entry for
+  ``"school"``, that subpath becomes the prefix for the call.
+
+Resolution order, given a call ``(scope=S, path=P)``::
+
+    prefix = scope_paths[S]  if S and S in scope_paths
+           = root_path       otherwise (incl. unknown scope or no scope)
+    final  = prefix + "/" + P   (with ``..`` segments rejected)
+
 Recommended setup: create a dedicated Nextcloud user (e.g. mcp-reader)
 and share specific folders read-only to that account. mcp-brain sees
 only what you share — no code change needed to add/remove access.
@@ -15,6 +33,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import posixpath
 from pathlib import PurePosixPath
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote
@@ -58,6 +77,8 @@ def register_nextcloud_tools(
     base_url: str,
     username: str,
     password: str,
+    root_path: str = "",
+    scope_paths: dict[str, str] | None = None,
 ) -> None:
     """Register Nextcloud tools on the MCP server.
 
@@ -66,9 +87,42 @@ def register_nextcloud_tools(
         base_url: Nextcloud server URL (e.g. http://10.0.0.42 or https://cloud.example.com).
         username: Nextcloud username (e.g. mcp-reader).
         password: App password for the Nextcloud account.
+        root_path: Optional subpath inside the account to use as the default
+            prefix for every browse/read call (e.g. ``"04. Brain"``). Empty
+            string means no prefix — the full Nextcloud root is exposed.
+        scope_paths: Optional ``{scope: subpath}`` map. When a tool call
+            passes a ``scope`` that is in this map, its subpath replaces
+            ``root_path`` for that call. Unknown scopes fall back to
+            ``root_path``.
     """
 
+    scope_map: dict[str, str] = {
+        k: v.strip("/") for k, v in (scope_paths or {}).items() if v
+    }
+    default_prefix = root_path.strip("/")
+
     webdav_base = f"{base_url.rstrip('/')}/remote.php/dav/files/{username}"
+
+    def _resolve(user_path: str, scope: str) -> str:
+        """Apply scope/root prefix to user_path, normalised, no ``..`` escapes.
+
+        Returns the path relative to the Nextcloud account root, ready to
+        feed into ``_webdav_url``. Raises ``ValueError`` if the user path
+        tries to climb above the active prefix via ``..``.
+        """
+        prefix = scope_map.get(scope, default_prefix) if scope else default_prefix
+        combined = "/".join(p for p in (prefix, user_path.strip("/")) if p)
+        # posixpath.normpath collapses ``..``; we then verify the result
+        # still sits under ``prefix``. Unprefixed calls (no scope, no
+        # root_path) preserve current behaviour — anything goes.
+        normalised = posixpath.normpath("/" + combined).lstrip("/")
+        if prefix:
+            allowed = posixpath.normpath("/" + prefix).lstrip("/")
+            if normalised != allowed and not normalised.startswith(allowed + "/"):
+                raise ValueError(
+                    f"Path '{user_path}' escapes the configured prefix '{prefix}'."
+                )
+        return normalised
 
     # -- HTTP helpers --------------------------------------------------------
 
@@ -216,8 +270,24 @@ def register_nextcloud_tools(
 
     # -- Tools ---------------------------------------------------------------
 
+    # Compose a docstring suffix that documents the active scope map at
+    # registration time. The LLM otherwise has no way to discover which
+    # scope keys are valid, and dumping the names into the description
+    # is far more reliable than expecting it to guess.
+    if scope_map:
+        _scope_doc = (
+            "\n\n        Configured scopes (pass via the `scope` argument):\n"
+            + "\n".join(f"          - {k} → {v}" for k, v in sorted(scope_map.items()))
+        )
+    elif default_prefix:
+        _scope_doc = (
+            f"\n\n        All paths are resolved under '{default_prefix}'."
+        )
+    else:
+        _scope_doc = ""
+
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True))
-    def nextcloud_browse(path: str = "") -> str:
+    def nextcloud_browse(path: str = "", scope: str = "") -> str:
         """Browse files and folders on Nextcloud.
 
         Returns a listing of files and folders at the given path.
@@ -225,19 +295,28 @@ def register_nextcloud_tools(
         specific files.
 
         Args:
-            path: Folder path to list. Empty string for root.
-                  Example: "27. Studia/24. Semestr 6"
-        """
+            path: Folder path to list, relative to the active prefix.
+                  Empty string for the prefix root.
+                  Example: "24. Semestr 6"
+            scope: Optional scope name (e.g. "school", "work"). When set
+                  and configured by the user, the call is rooted at that
+                  scope's subpath instead of the default prefix.
+        """ + _scope_doc
         try:
             require("nextcloud:read")
         except PermissionDenied as e:
             return str(e)
         try:
-            xml_bytes = _propfind(path)
-            entries = _parse_propfind(xml_bytes, path)
+            resolved = _resolve(path, scope)
+        except ValueError as e:
+            return str(e)
+        try:
+            xml_bytes = _propfind(resolved)
+            entries = _parse_propfind(xml_bytes, resolved)
 
+            display_path = resolved or "(root)"
             if not entries:
-                return f"Empty folder: {path or '(root)'}"
+                return f"Empty folder: {display_path}"
 
             lines = []
             for e in entries:
@@ -247,7 +326,7 @@ def register_nextcloud_tools(
                     size = _format_size(e["size"]) if e["size"] else ""
                     lines.append(f"\U0001f4c4 {e['name']} ({size})")
 
-            header = f"## {path or '(root)'}\n"
+            header = f"## {display_path}\n"
             return header + "\n".join(lines)
         except HTTPError as e:
             return _api_error(e)
@@ -255,7 +334,7 @@ def register_nextcloud_tools(
             return f"Nextcloud connection error: {e}"
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True))
-    def nextcloud_read(path: str) -> str | list[dict]:
+    def nextcloud_read(path: str, scope: str = "") -> str | list[dict]:
         """Read a file from Nextcloud. Auto-detects file type by extension.
 
         Supported types:
@@ -265,17 +344,24 @@ def register_nextcloud_tools(
         - Images (jpg, png, gif, webp, bmp) → returns image for visual analysis
 
         Args:
-            path: Full path to the file.
-                  Example: "27. Studia/24. Semestr 6/Mikroprocesory/Wyklad_05.pdf"
-        """
+            path: Path to the file, relative to the active prefix.
+                  Example: "24. Semestr 6/Mikroprocesory/Wyklad_05.pdf"
+            scope: Optional scope name (e.g. "school", "work"). When set
+                  and configured by the user, the call is rooted at that
+                  scope's subpath instead of the default prefix.
+        """ + _scope_doc
         try:
             require("nextcloud:read")
         except PermissionDenied as e:
             return str(e)
         try:
+            resolved = _resolve(path, scope)
+        except ValueError as e:
+            return str(e)
+        try:
             ext = PurePosixPath(path).suffix.lower()
 
-            raw = _get_binary(path)
+            raw = _get_binary(resolved)
 
             # Route by extension
             if ext in _IMAGE_EXTENSIONS:

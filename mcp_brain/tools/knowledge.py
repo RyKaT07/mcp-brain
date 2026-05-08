@@ -17,6 +17,7 @@ from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.embeddings.service import EmbeddingService
+from mcp_brain import graph_cache
 from mcp_brain.graph import RelationshipGraph
 from mcp_brain.rate_limit import RateLimiter
 from mcp_brain.search import SearchIndex
@@ -39,6 +40,7 @@ logger = logging.getLogger(__name__)
 _rl_update = RateLimiter("knowledge_update", 5.0)
 _rl_delete = RateLimiter("knowledge_delete", 5.0)
 _rl_undo = RateLimiter("knowledge_undo", 30.0)
+_rl_restore = RateLimiter("knowledge_restore_at", 5.0)
 
 
 def _git_commit(knowledge_dir: Path, filepath: Path, message: str) -> None:
@@ -390,6 +392,12 @@ def register_knowledge_tools(
                             project,
                             exc_info=True,
                         )
+
+                # Drop the cached knowledge_graph payload for this user
+                # — file/edge/relation counts have changed and the next
+                # panel poll must see the update, not a 60-second-stale
+                # snapshot.
+                graph_cache.invalidate(_user_id)
 
                 return f"Updated {scope}/{project} § {section}"
             finally:
@@ -757,6 +765,224 @@ def register_knowledge_tools(
         return output
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
+    def knowledge_show_at(scope: str, project: str, sha: str) -> str:
+        """Return the contents of a knowledge file at a specific commit.
+
+        Used by the panel's Git view to preview a previous version of a
+        file (and, on the panel side, to compute a diff against the
+        current content or hand the historic content back into
+        ``knowledge_update`` as a "restore to this version" operation).
+
+        Returns the raw file contents on success, or a string starting
+        with "Error:" when the SHA is unknown / the file didn't exist
+        at that commit / git is unavailable.
+
+        Args:
+            scope: Category — e.g. 'work', 'school', 'homelab'
+            project: Project/topic name (filename without .md)
+            sha: Commit SHA — short or full hash. Must exist in the
+                 knowledge dir's git repo.
+        """
+        meter_call("knowledge_show_at")
+        try:
+            require(f"knowledge:read:{scope}")
+        except PermissionDenied as e:
+            return f"Error: {e}"
+
+        err = _validate_scope_project(scope, project)
+        if err:
+            return f"Error: {err}"
+
+        # Reject anything that isn't a hex SHA (short or long). Defends
+        # against ``--`` / shell metacharacter injection — git would
+        # error out anyway, but we'd rather reject early.
+        if not sha or not all(c in "0123456789abcdefABCDEF" for c in sha):
+            return "Error: invalid commit SHA"
+        if not (4 <= len(sha) <= 40):
+            return "Error: invalid commit SHA length"
+
+        effective_dir = get_effective_knowledge_dir(knowledge_dir)
+        try:
+            filepath = _resolve_file(effective_dir, scope, project)
+        except ValueError as e:
+            return f"Error: {e}"
+
+        # Path inside the repo, relative to the working dir we run git
+        # from (effective_dir). ``git show`` wants this exact form.
+        try:
+            rel = filepath.relative_to(effective_dir)
+        except ValueError:
+            return "Error: file outside knowledge dir"
+
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "safe.directory=*",
+                    "show",
+                    f"{sha}:{rel.as_posix()}",
+                ],
+                cwd=effective_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except FileNotFoundError:
+            return "Error: git not available"
+        except subprocess.CalledProcessError as exc:
+            logger.info(
+                "git show failed for %s/%s @ %s: %s",
+                scope,
+                project,
+                sha,
+                (exc.stderr or exc.stdout or "<no output>").strip(),
+            )
+            return "Error: commit or file not found at that revision"
+
+        return result.stdout
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    def knowledge_restore_at(scope: str, project: str, sha: str) -> str:
+        """Replace a knowledge file with its content at a specific commit.
+
+        File-level rollback that complements ``knowledge_undo`` (which
+        is repo-wide). Used by the panel's Git view "restore to this
+        version" button. The historic content from ``git show
+        <sha>:<path>`` is written to the file as a single new commit
+        with message ``Restore <scope>/<project> to <sha7>``; subsequent
+        ``knowledge_history`` will show this restore as the latest entry,
+        so the operation is itself reversible via ``knowledge_undo``.
+
+        Side-effects mirror ``knowledge_update``: search index +
+        relationship graph are refreshed for the file and the embedding
+        service re-embeds chunks whose hash changed.
+
+        Args:
+            scope: Category — e.g. 'work', 'school', 'homelab'
+            project: Project/topic name (filename without .md)
+            sha: Commit SHA — short or full hash. Must be a hex string,
+                 4–40 chars long, and exist in the knowledge repo.
+        """
+        rate_err = _rl_restore.check()
+        if rate_err:
+            return rate_err
+        meter_call("knowledge_restore_at")
+        try:
+            require(f"knowledge:write:{scope}")
+        except PermissionDenied as e:
+            return str(e)
+
+        err = _validate_scope_project(scope, project)
+        if err:
+            return err
+
+        err = _validate_scope_writable(scope)
+        if err:
+            return err
+
+        if not sha or not all(c in "0123456789abcdefABCDEF" for c in sha):
+            return "Error: invalid commit SHA"
+        if not (4 <= len(sha) <= 40):
+            return "Error: invalid commit SHA length"
+
+        effective_dir = get_effective_knowledge_dir(knowledge_dir)
+        try:
+            filepath = _resolve_file(effective_dir, scope, project)
+        except ValueError as e:
+            return f"Error: {e}"
+
+        try:
+            rel = filepath.relative_to(effective_dir)
+        except ValueError:
+            return "Error: file outside knowledge dir"
+
+        # Pull the historic content via `git show`. We write that to
+        # disk under the same file lock the section-level write uses,
+        # so a concurrent ``knowledge_update`` on the same file can't
+        # interleave with the restore.
+        try:
+            show_result = subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "safe.directory=*",
+                    "show",
+                    f"{sha}:{rel.as_posix()}",
+                ],
+                cwd=effective_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except FileNotFoundError:
+            return "Error: git not available"
+        except subprocess.CalledProcessError as exc:
+            logger.info(
+                "git show failed for restore %s/%s @ %s: %s",
+                scope,
+                project,
+                sha,
+                (exc.stderr or exc.stdout or "<no output>").strip(),
+            )
+            return "Error: commit or file not found at that revision"
+
+        historic = show_result.stdout
+
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = filepath.with_suffix(".lock")
+        lock_path.touch(exist_ok=True)
+
+        with open(lock_path, "r") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            try:
+                filepath.write_text(historic, encoding="utf-8")
+                short_sha = sha[:7]
+                _git_commit(
+                    effective_dir,
+                    filepath,
+                    f"restore {scope}/{project} to {short_sha}",
+                )
+
+                _user_id = get_current_user_id()
+                if _user_id is not None:
+                    if search_index is not None:
+                        search_index.update_file_for_user(
+                            _user_id, scope, project, historic
+                        )
+                    if rel_graph is not None:
+                        rel_graph.update_file_for_user(
+                            _user_id, scope, project, historic
+                        )
+                else:
+                    if search_index is not None:
+                        search_index.update_file(scope, project, historic)
+                    if rel_graph is not None:
+                        rel_graph.update_file(scope, project, historic)
+
+                if embedding_service is not None:
+                    try:
+                        embedding_service.refresh_file(
+                            scope, project, historic, user_id=_user_id
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "embeddings.refresh failed for restore %s/%s",
+                            scope,
+                            project,
+                            exc_info=True,
+                        )
+
+                graph_cache.invalidate(_user_id)
+
+                return (
+                    f"Restored {scope}/{project} to {short_sha}. "
+                    f"Use knowledge_undo to revert this restore."
+                )
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def knowledge_timeline(scope: str | None = None, limit: int = 50) -> str:
         """Return a chronological commit log across knowledge files.
 
@@ -992,6 +1218,8 @@ def register_knowledge_tools(
                     project,
                     exc_info=True,
                 )
+
+        graph_cache.invalidate(_user_id)
 
         return f"Deleted {scope}/{project}"
 

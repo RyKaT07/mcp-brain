@@ -23,6 +23,7 @@ which is why the previous `Mount('/', sse_app())` trick worked without
 this gymnastics — SSE is now deprecated in the MCP spec, so we migrated.
 """
 
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -56,6 +57,7 @@ from mcp_brain.tools.meta import register_meta_tools
 from mcp_brain.tools.search import register_search_tools
 from mcp_brain.tools.graph import register_graph_tools
 from mcp_brain.tools.knowledge_graph_tool import register_knowledge_graph_tool
+from mcp_brain.tools.layout import register_layout_tools
 from mcp_brain.tools.semantic import register_semantic_tools
 from mcp_brain.tools.wake import register_wake_tools
 from mcp_brain.search import SearchIndex
@@ -95,6 +97,8 @@ TODOIST_API_KEY = os.getenv("TODOIST_API_KEY", "")
 NEXTCLOUD_URL = os.getenv("NEXTCLOUD_URL", "")
 NEXTCLOUD_USER = os.getenv("NEXTCLOUD_USER", "")
 NEXTCLOUD_PASSWORD = os.getenv("NEXTCLOUD_PASSWORD", "")
+NEXTCLOUD_ROOT_PATH = os.getenv("NEXTCLOUD_ROOT_PATH", "")
+NEXTCLOUD_SCOPE_PATHS = os.getenv("NEXTCLOUD_SCOPE_PATHS", "")
 TRELLO_API_KEY = os.getenv("TRELLO_API_KEY", "")
 TRELLO_API_TOKEN = os.getenv("TRELLO_API_TOKEN", "")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
@@ -242,6 +246,27 @@ def _load_briefing_trigger(knowledge_dir: Path) -> str:
     return _extract_h2_section(content, "Read discipline — don't over-fetch")
 
 
+def _parse_scope_paths(raw: str) -> dict[str, str]:
+    """Parse the NEXTCLOUD_SCOPE_PATHS env var into a {scope: subpath} dict.
+
+    The Panel writes this as a JSON object so we don't have to invent a
+    cross-process key/value escaping scheme on top of the dotenv format
+    (scope names can contain spaces, slashes, dots…). Empty or invalid
+    input is silently treated as "no per-scope config" — the user simply
+    falls back to root_path or no prefix at all.
+    """
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("NEXTCLOUD_SCOPE_PATHS is not valid JSON; ignoring")
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(k): str(v) for k, v in parsed.items() if v}
+
+
 # Module-level stores so both _build_mcp() and _build_app() share the same
 # instances without threading issues.
 key_store = KeyStore(KEY_STORE_PATH)
@@ -357,7 +382,12 @@ def _build_mcp() -> FastMCP:
     embedding_service = EmbeddingService.create_or_none(KNOWLEDGE_DIR)
     if embedding_service is not None:
         try:
-            stats = embedding_service.bootstrap(KNOWLEDGE_DIR)
+            # Walk root + every users/<uid>/ subdir so multi-user
+            # vaults (yaml tokens with user_id, OAuth) get their
+            # per-user store filled on first start. Patryk's single-
+            # user setup keeps everything at the root and the per-user
+            # leg is a no-op when there's no users/ dir.
+            stats = embedding_service.bootstrap_all()
             logger.info("embeddings bootstrap: %s", stats)
         except Exception:  # noqa: BLE001
             logger.warning("embeddings bootstrap failed", exc_info=True)
@@ -370,7 +400,7 @@ def _build_mcp() -> FastMCP:
         rel_graph=rel_graph,
         embedding_service=embedding_service,
     )
-    register_maintain_tools(mcp, KNOWLEDGE_DIR)
+    register_maintain_tools(mcp, KNOWLEDGE_DIR, embedding_service=embedding_service)
     register_meta_tools(mcp, KNOWLEDGE_DIR)
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
     register_briefing_tools(
@@ -422,6 +452,8 @@ def _build_mcp() -> FastMCP:
             nextcloud_creds["NEXTCLOUD_URL"],
             nextcloud_creds["NEXTCLOUD_USER"],
             nextcloud_creds["NEXTCLOUD_PASSWORD"],
+            root_path=NEXTCLOUD_ROOT_PATH,
+            scope_paths=_parse_scope_paths(NEXTCLOUD_SCOPE_PATHS),
         )
 
     trello_creds = _get_integration_creds("trello")
@@ -439,6 +471,7 @@ def _build_mcp() -> FastMCP:
     register_search_tools(mcp, KNOWLEDGE_DIR, search_index)
     register_graph_tools(mcp, KNOWLEDGE_DIR, rel_graph)
     register_knowledge_graph_tool(mcp, KNOWLEDGE_DIR, rel_graph, embedding_service)
+    register_layout_tools(mcp, KNOWLEDGE_DIR, rel_graph)
     register_semantic_tools(mcp, KNOWLEDGE_DIR, embedding_service)
     # brain_wake must be registered LAST so its tool inventory snapshot
     # captures every tool registered above (including conditional ones).

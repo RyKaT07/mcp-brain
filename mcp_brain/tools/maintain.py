@@ -34,9 +34,11 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
+from mcp_brain.embeddings.service import EmbeddingService
 from mcp_brain.tools._perms import (
     ALL,
     allowed_subscopes,
+    get_current_user_id,
     get_effective_knowledge_dir,
     meter_call,
     require,
@@ -57,6 +59,21 @@ _TODO_RE = re.compile(r"\b(TODO|FIXME)\b[^\n]*", re.IGNORECASE)
 SESSION_FILENAME = ".maintain_session.json"
 MAX_QUESTIONS = 10
 BATCH_SIZE = 5
+
+# Where the cached audit JSON lives. Per-user setups land under
+# ``users/<uid>/_index/`` so a multi-tenant brain doesn't blend
+# tenant data into one cache file.
+LAST_AUDIT_FILENAME = "last_audit.json"
+LAST_AUDIT_TTL_SECONDS = 24 * 3600
+
+
+def _audit_cache_path(knowledge_dir: Path, user_id: str | None) -> Path:
+    """Return the per-user audit-cache JSON path."""
+    if user_id:
+        return (
+            knowledge_dir / "users" / user_id / "_index" / LAST_AUDIT_FILENAME
+        )
+    return knowledge_dir / "_index" / LAST_AUDIT_FILENAME
 
 
 # ---------------------------------------------------------------------------
@@ -376,8 +393,18 @@ def _write_section(
 # Main registration
 
 
-def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
-    """Register knowledge_maintain and interactive maintain session tools."""
+def register_maintain_tools(
+    mcp: FastMCP,
+    knowledge_dir: Path,
+    embedding_service: EmbeddingService | None = None,
+) -> None:
+    """Register knowledge_maintain and interactive maintain session tools.
+
+    ``embedding_service`` is optional; when present, ``knowledge_maintain``
+    extends its audit with vector-similarity checks (low-coherence
+    chunks, duplicate-suspect pairs across files). When absent, those
+    sections are silently omitted from the report.
+    """
 
     # ------------------------------------------------------------------
     # Original read-only audit tool (unchanged, backwards compatible)
@@ -547,6 +574,20 @@ def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
                 )
 
         # ----------------------------------------------------------------
+        # Pass 4: vector-similarity audit (optional).
+        # ----------------------------------------------------------------
+        coherence_report: dict | None = None
+        if embedding_service is not None:
+            try:
+                coherence_report = embedding_service.audit_coherence(
+                    allowed_scopes=set(allowed) if allowed is not ALL else None,
+                    user_id=get_current_user_id(),
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("audit_coherence failed", exc_info=True)
+                coherence_report = None
+
+        # ----------------------------------------------------------------
         # Build markdown report.
         # ----------------------------------------------------------------
         lines: list[str] = ["# Knowledge Vault Maintenance Report", ""]
@@ -577,9 +618,47 @@ def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
             lines.append("  ✅ No issues found.")
         lines.append("")
 
+        # --- Coherence + duplicate-suspect (optional) ---
+        coherence_count = 0
+        duplicate_count = 0
+        if coherence_report is not None:
+            low = coherence_report.get("low_coherence", []) or []
+            dups = coherence_report.get("duplicate_suspects", []) or []
+            coherence_count = len(low)
+            duplicate_count = len(dups)
+
+            lines.append("## 4. Low-coherence chunks (no close vector neighbours)")
+            if low:
+                for entry in low:
+                    lines.append(
+                        f"  - `{entry['scope']}/{entry['project']}` "
+                        f"§ {entry['heading_path']} — "
+                        f"nearest L2 {entry['nearest_distance']:.3f}"
+                    )
+            else:
+                lines.append("  ✅ Every chunk has a close neighbour.")
+            lines.append("")
+
+            lines.append("## 5. Duplicate-suspect pairs (high vector similarity across files)")
+            if dups:
+                for pair in dups:
+                    a, b = pair["a"], pair["b"]
+                    lines.append(
+                        f"  - `{a['scope']}/{a['project']}` § {a['heading_path']}"
+                        f"  ↔  `{b['scope']}/{b['project']}` § {b['heading_path']}"
+                        f"  (L2 {pair['distance']:.3f})"
+                    )
+            else:
+                lines.append("  ✅ No duplicate-suspect pairs.")
+            lines.append("")
+
         # --- Summary ---
-        total = len(stale_files) + len(broken_refs) + len(
-            [i for i in meta_issues if i.strip().startswith("-")]
+        total = (
+            len(stale_files)
+            + len(broken_refs)
+            + len([i for i in meta_issues if i.strip().startswith("-")])
+            + coherence_count
+            + duplicate_count
         )
         if total == 0:
             lines.append("**Vault is healthy — no issues found.**")
@@ -589,10 +668,93 @@ def register_maintain_tools(mcp: FastMCP, knowledge_dir: Path) -> None:
                 f"Review stale files with `knowledge_read`, fix broken refs with "
                 f"`knowledge_update` or `knowledge_delete`, and update meta.yaml "
                 f"with `meta_update` if needed. "
+                f"Low-coherence and duplicate-suspect entries are vector-based "
+                f"hints — link the orphans into a richer file or merge the "
+                f"duplicates with `knowledge_update`. "
                 f"Or start an interactive session with `maintain_start`."
             )
 
         return "\n".join(lines)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
+    def maintain_last_run(
+        force: bool = False,
+        scope: str | None = None,
+        stale_days: int = 90,
+    ) -> str:
+        """Return the last cached vault audit, refreshing on demand.
+
+        Lazy-cron pattern: read the JSON cache at
+        ``<knowledge>/_index/last_audit.json`` (per-user under
+        ``users/<uid>/_index/`` for multi-tenant brains). When the
+        cache is missing or older than 24h — or when ``force=True`` —
+        re-runs ``knowledge_maintain`` synchronously and writes the
+        result back.
+
+        Output is a JSON envelope so the panel can render the
+        last-run timestamp alongside the markdown report:
+
+        ``{"timestamp": "<iso8601>", "report": "<markdown>",
+            "refreshed": <bool>, "ttl_seconds": <int>}``
+
+        Args:
+            force: When True, ignore the cache TTL and re-run now.
+            scope: Optional scope filter forwarded to knowledge_maintain.
+            stale_days: Stale threshold for the 'staleness' audit
+                section (forwarded to knowledge_maintain).
+        """
+        meter_call("maintain_last_run")
+
+        user_id = get_current_user_id()
+        cache_path = _audit_cache_path(knowledge_dir, user_id)
+        now = datetime.now(timezone.utc)
+
+        cached: dict | None = None
+        last: datetime | None = None
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            ts = cached.get("timestamp", "") if cached else ""
+            if ts:
+                last = datetime.fromisoformat(ts)
+        except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError):
+            cached = None
+            last = None
+
+        stale = (
+            force
+            or last is None
+            or (now - last).total_seconds() > LAST_AUDIT_TTL_SECONDS
+        )
+
+        if stale:
+            report = knowledge_maintain(scope=scope, stale_days=stale_days)
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(
+                    json.dumps(
+                        {"timestamp": now.isoformat(), "report": report},
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                logger.warning(
+                    "maintain_last_run: cache write failed: %s", exc
+                )
+            last = now
+            refreshed = True
+        else:
+            report = (cached or {}).get("report", "")
+            refreshed = False
+
+        return json.dumps(
+            {
+                "timestamp": (last or now).isoformat(),
+                "report": report,
+                "refreshed": refreshed,
+                "ttl_seconds": LAST_AUDIT_TTL_SECONDS,
+            }
+        )
 
     # ------------------------------------------------------------------
     # Interactive session tools

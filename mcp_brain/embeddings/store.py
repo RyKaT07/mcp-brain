@@ -162,6 +162,45 @@ class VectorStore:
                 self._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]
             )
 
+    def iter_chunks_text(
+        self,
+        allowed_scopes: set[str] | None = None,
+    ) -> list[dict]:
+        """Return every chunk's identifying metadata + text (no embedding).
+
+        Used by audit / maintain checks that need to feed every chunk
+        through the embedder again to compute pairwise similarity. We
+        deliberately don't return the stored embedding here because
+        sqlite-vec virtual tables don't expose the raw blob through a
+        plain SELECT on the v0 builds we ship — re-encoding is cheap
+        and keeps the API simple.
+
+        Each entry: ``{chunk_id, scope, project, heading_path, text}``.
+        Ordered by ``(scope, project, chunk_idx)`` for stable output.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT chunk_id, scope, project, heading_path, text
+                FROM chunks
+                ORDER BY scope, project, chunk_idx
+                """
+            ).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            if allowed_scopes is not None and r["scope"] not in allowed_scopes:
+                continue
+            out.append(
+                {
+                    "chunk_id": r["chunk_id"],
+                    "scope": r["scope"],
+                    "project": r["project"],
+                    "heading_path": r["heading_path"],
+                    "text": r["text"],
+                }
+            )
+        return out
+
     # ── Writes ───────────────────────────────────────────────────
 
     def upsert(

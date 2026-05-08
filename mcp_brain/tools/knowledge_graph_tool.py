@@ -12,6 +12,7 @@ from mcp.types import ToolAnnotations
 
 from mcp_brain.auth import PermissionDenied
 from mcp_brain.embeddings.service import EmbeddingService
+from mcp_brain import graph_cache
 from mcp_brain.graph import RelationshipGraph
 from mcp_brain.tools._perms import (
     ALL,
@@ -331,7 +332,19 @@ def register_knowledge_graph_tool(
                     )
                 allowed_scopes_filter = set(allowed)
 
-        return compute_graph(
+        user_id = get_current_user_id()
+        cache_key = graph_cache.make_key(
+            user_id=user_id,
+            scope=scope,
+            include_semantic=include_semantic,
+            include_tags=include_tags,
+            allowed_scopes=allowed_scopes_filter,
+        )
+        cached = graph_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        payload = compute_graph(
             knowledge_dir,
             rel_graph,
             embedding_service,
@@ -339,5 +352,7 @@ def register_knowledge_graph_tool(
             include_semantic=include_semantic,
             include_tags=include_tags,
             allowed_scopes_filter=allowed_scopes_filter,
-            user_id=get_current_user_id(),
+            user_id=user_id,
         )
+        graph_cache.set(cache_key, payload)
+        return payload

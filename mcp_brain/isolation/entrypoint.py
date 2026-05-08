@@ -374,6 +374,11 @@ def main() -> None:
         state_base=STATE_BASE,
         socket_dir=SOCKET_DIR,
         idle_timeout=IDLE_TIMEOUT,
+        # Per-user subscription plan drives cgroup quotas at spawn
+        # time. Resolved from auth.yaml so a panel-side plan change
+        # propagates on the next worker spawn without restarting
+        # the brain (auth.yaml hot-reloads on mtime).
+        plan_resolver=yaml_verifier.plan_for_user_id,
     )
 
     app = build_app(yaml_verifier, key_store, process_manager)

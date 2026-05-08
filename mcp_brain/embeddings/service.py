@@ -163,37 +163,242 @@ class EmbeddingService:
         *,
         user_id: str | None = None,
     ) -> dict[str, int]:
-        """Walk a knowledge directory and (re-)embed any file that has
-        zero chunks in the store. Idempotent: existing chunks are kept.
+        """Walk a knowledge directory and reconcile every markdown file
+        with the embedding store.
 
-        For incremental rebuilds the diff-aware refresh in
-        ``refresh_file`` handles changed content. ``bootstrap`` is the
-        one-time fill on a fresh DB.
+        The previous implementation skipped any file that already had
+        chunks recorded — a fast no-op on a fresh DB, but it missed
+        edits that landed while the brain was offline. Files modified
+        outside the live ``refresh_file`` hook (manual edit, git pull,
+        Syncthing sync into ``knowledge/``) would silently keep stale
+        embeddings until the next in-process update touched the same
+        section.
+
+        New behaviour: always read the file and run ``refresh_file``,
+        which is already diff-aware (it hashes per-chunk and only
+        re-embeds the chunks whose ``content_hash`` changed). For
+        unchanged files this is essentially free — the cost is one
+        ``read_text`` plus chunking; embeddings are not recomputed.
+
+        Counters returned:
+
+        - ``embedded`` — chunks that the model actually re-encoded
+          (new files + changed sections).
+        - ``skipped`` — files where every chunk hashed to the existing
+          stored hash AND nothing was removed (true no-op).
+        - ``refreshed`` — files where at least one chunk was embedded
+          or one chunk was removed; useful as the "stale fixed"
+          counter on startup logs.
+        - ``files`` — total markdown files visited.
         """
         base = Path(knowledge_dir) if knowledge_dir is not None else self.knowledge_dir
-        store = self.store_for(user_id)
+        if not base.exists():
+            return {"embedded": 0, "skipped": 0, "refreshed": 0, "files": 0}
         embedded = 0
         skipped = 0
-        if not base.exists():
-            return {"embedded": 0, "skipped": 0, "files": 0}
+        refreshed = 0
         files = 0
         for md in base.glob("*/*.md"):
             scope = md.parent.name
             project = md.stem
             if scope.startswith(("_", ".")):
                 continue
-            files += 1
-            existing = store.get_hashes(scope, project)
-            if existing:
-                skipped += 1
+            # Multi-user knowledge layout has files under
+            # ``knowledge_dir/users/<uid>/<scope>/<file>.md``. Skip the
+            # ``users`` directory at this level — ``bootstrap_all``
+            # iterates per-user and embeds those into the right
+            # per-user stores. Without this guard ``users/<uid>.md``
+            # would never match (it's a directory, not a file), but
+            # any stray ``users/random.md`` would land in the global
+            # store under the wrong scope name.
+            if scope == "users":
                 continue
+            files += 1
             try:
                 content = md.read_text(encoding="utf-8")
             except OSError:
                 continue
             stats = self.refresh_file(scope, project, content, user_id=user_id)
             embedded += stats["embedded"]
-        return {"embedded": embedded, "skipped": skipped, "files": files}
+            if stats["embedded"] == 0 and stats["removed"] == 0:
+                skipped += 1
+            else:
+                refreshed += 1
+        return {
+            "embedded": embedded,
+            "skipped": skipped,
+            "refreshed": refreshed,
+            "files": files,
+        }
+
+    def bootstrap_all(self) -> dict[str, dict[str, int]]:
+        """Bootstrap the root vault and every per-user vault.
+
+        Walks ``self.knowledge_dir`` (root → global store) and every
+        ``self.knowledge_dir/users/<uid>/`` directory (→ per-user
+        store keyed by ``<uid>``). Returns a mapping of target name
+        (``"root"`` or the user id) to the standard
+        ``{embedded, skipped, files}`` stats.
+
+        Use this on startup of the unified server (``server.py``)
+        which serves multiple users from one process. The bwrap
+        worker (``worker.py``) gets a user-scoped knowledge dir
+        bind-mounted by the manager, so it just calls ``bootstrap``
+        directly.
+        """
+        out: dict[str, dict[str, int]] = {}
+        out["root"] = self.bootstrap(self.knowledge_dir)
+        users_dir = self.knowledge_dir / "users"
+        if users_dir.is_dir():
+            for child in sorted(users_dir.iterdir()):
+                if not child.is_dir():
+                    continue
+                if child.name.startswith((".", "_")):
+                    continue
+                out[child.name] = self.bootstrap(child, user_id=child.name)
+        return out
+
+    # ── Coherence / duplicate audits ─────────────────────────────
+
+    def audit_coherence(
+        self,
+        *,
+        low_coherence_distance: float = 1.0,
+        duplicate_distance: float = 0.4,
+        max_pairs: int = 50,
+        allowed_scopes: set[str] | None = None,
+        user_id: str | None = None,
+    ) -> dict:
+        """Find low-coherence chunks and duplicate-suspect pairs.
+
+        Re-embeds every chunk text via the in-process embedder and
+        computes pairwise distance over the resulting matrix. With
+        L2-normalised embeddings (which fastembed delivers), L2 and
+        cosine are interchangeable: ``L2² = 2·(1 - cos)``. Default
+        thresholds correspond roughly to the cosine numbers Patryk
+        wrote into the roadmap:
+
+        - ``low_coherence_distance = 1.0`` ↔ cosine 0.5 — a chunk
+          whose nearest neighbour is more distant than this is an
+          orphan in vector space; the maintain loop should propose
+          either linking it or merging it into a richer file.
+        - ``duplicate_distance = 0.4`` ↔ cosine 0.92 — a pair of
+          chunks across different files with this much overlap is a
+          merge candidate.
+
+        Returns ``{low_coherence: [...], duplicate_suspects: [...],
+        chunk_count}``. Both lists are bounded by ``max_pairs``.
+        """
+        store = self.store_for(user_id)
+        chunks = store.iter_chunks_text(allowed_scopes=allowed_scopes)
+        if len(chunks) < 2:
+            return {
+                "low_coherence": [],
+                "duplicate_suspects": [],
+                "chunk_count": len(chunks),
+            }
+
+        # Re-embed every chunk in one batch and convert to numpy for
+        # the all-pairs distance scan. ``encode`` returns plain Python
+        # lists so we wrap into numpy here — the audit is the only
+        # place we need numpy and importing it lazily keeps it out of
+        # the cold-start path.
+        try:
+            import numpy as np
+        except ImportError:
+            return {
+                "low_coherence": [],
+                "duplicate_suspects": [],
+                "chunk_count": len(chunks),
+                "error": "numpy not installed — coherence audit skipped.",
+            }
+
+        vectors = self.embedder.encode([c["text"] for c in chunks])
+        matrix = np.asarray(vectors, dtype=np.float32)
+
+        # Compute pairwise squared Euclidean distance. For embeddings
+        # already L2-normalised this equals 2·(1 - cos), so the same
+        # scan answers both questions in one pass.
+        norms_sq = (matrix * matrix).sum(axis=1)
+        # ``dists_sq[i, j] = ||v_i - v_j||²``
+        dists_sq = (
+            norms_sq[:, None]
+            + norms_sq[None, :]
+            - 2.0 * matrix @ matrix.T
+        )
+        # Numerical noise can leave the diagonal slightly negative;
+        # clamp before sqrt.
+        np.fill_diagonal(dists_sq, np.inf)
+        dists_sq = np.maximum(dists_sq, 0.0)
+        dists = np.sqrt(dists_sq)
+
+        # Low-coherence: each chunk's nearest neighbour distance.
+        # If it exceeds the threshold the chunk has no close kin.
+        nearest = dists.min(axis=1)
+        low_idx = np.argsort(-nearest)  # worst first
+        low_coherence: list[dict] = []
+        for idx in low_idx:
+            d = float(nearest[idx])
+            if d <= low_coherence_distance:
+                break
+            c = chunks[idx]
+            low_coherence.append(
+                {
+                    "chunk_id": c["chunk_id"],
+                    "scope": c["scope"],
+                    "project": c["project"],
+                    "heading_path": c["heading_path"],
+                    "nearest_distance": d,
+                }
+            )
+            if len(low_coherence) >= max_pairs:
+                break
+
+        # Duplicate suspects: pairs (i < j) across different files
+        # with distance below the threshold. Same-file chunks are
+        # ignored because the panel already groups by file.
+        duplicate_suspects: list[dict] = []
+        n = len(chunks)
+        # Iterate over the upper triangle. For small vaults this is
+        # cheap; with thousands of chunks we'd switch to a partial
+        # k-NN approach, but ``audit_coherence`` is an on-demand tool
+        # anyway.
+        for i in range(n):
+            for j in range(i + 1, n):
+                d = float(dists[i, j])
+                if d > duplicate_distance:
+                    continue
+                a = chunks[i]
+                b = chunks[j]
+                if a["scope"] == b["scope"] and a["project"] == b["project"]:
+                    continue
+                duplicate_suspects.append(
+                    {
+                        "a": {
+                            "chunk_id": a["chunk_id"],
+                            "scope": a["scope"],
+                            "project": a["project"],
+                            "heading_path": a["heading_path"],
+                        },
+                        "b": {
+                            "chunk_id": b["chunk_id"],
+                            "scope": b["scope"],
+                            "project": b["project"],
+                            "heading_path": b["heading_path"],
+                        },
+                        "distance": d,
+                    }
+                )
+        # Closest pairs first.
+        duplicate_suspects.sort(key=lambda p: p["distance"])
+        if len(duplicate_suspects) > max_pairs:
+            duplicate_suspects = duplicate_suspects[:max_pairs]
+
+        return {
+            "low_coherence": low_coherence,
+            "duplicate_suspects": duplicate_suspects,
+            "chunk_count": len(chunks),
+        }
 
     # ── Query ────────────────────────────────────────────────────
 

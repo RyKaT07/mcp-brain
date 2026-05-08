@@ -226,7 +226,7 @@ def register_graph_tools(
         return "\n".join(lines)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
-    def knowledge_timeline(
+    def knowledge_entity_timeline(
         entity: str,
         scope: str | None = None,
     ) -> str:
@@ -241,7 +241,7 @@ def register_graph_tools(
             scope: Optional knowledge scope for permission checking. Must be a
                    scope the caller has read access to.
         """
-        meter_call("knowledge_timeline")
+        meter_call("knowledge_entity_timeline")
 
         allowed = allowed_subscopes("knowledge:read")
 

@@ -24,11 +24,13 @@ import os
 import signal
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from mcp_brain.isolation.bwrap import build_bwrap_cmd
 from mcp_brain.isolation.cgroups import cleanup_cgroup, setup_cgroup
+from mcp_brain.isolation.quotas import quotas_for_plan
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +69,17 @@ class ProcessManager:
         state_base: Path,
         socket_dir: Path,
         idle_timeout: int = 600,
+        plan_resolver: Callable[[str], str | None] | None = None,
     ) -> None:
         self._knowledge_base = knowledge_base
         self._state_base = state_base
         self._socket_dir = socket_dir
         self._idle_timeout = idle_timeout
+        # Optional callback that maps a user_id to a subscription plan
+        # name. ``None`` (or returning ``None``) means use the free-tier
+        # default quotas — that's the legacy behaviour for tokens
+        # without a plan field.
+        self._plan_resolver = plan_resolver
 
         self._workers: dict[str, WorkerInfo] = {}
         self._lock = asyncio.Lock()
@@ -254,8 +262,35 @@ class ProcessManager:
             stderr=None,
         )
 
-        # Set up cgroup limits (best-effort — failure does not abort spawn).
-        setup_cgroup(user_id, proc.pid)
+        # Set up cgroup limits keyed off the user's subscription plan.
+        # plan_resolver is optional; when missing or returning None,
+        # quotas_for_plan() falls back to the free-tier defaults so
+        # the legacy single-tier behaviour still works.
+        plan: str | None = None
+        if self._plan_resolver is not None:
+            try:
+                plan = self._plan_resolver(user_id)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "manager: plan_resolver failed for user=%s — using free defaults",
+                    user_id,
+                    exc_info=True,
+                )
+                plan = None
+        quotas = quotas_for_plan(plan)
+        logger.info(
+            "manager: applying plan=%s quotas=%s to user=%s",
+            plan or "free(default)",
+            quotas,
+            user_id,
+        )
+        setup_cgroup(
+            user_id,
+            proc.pid,
+            memory_max=quotas["memory_max"],
+            cpu_pct=quotas["cpu_pct"],
+            pids_max=quotas["pids_max"],
+        )
 
         # Wait for the Unix socket to appear.
         deadline = time.monotonic() + _SOCKET_READY_TIMEOUT

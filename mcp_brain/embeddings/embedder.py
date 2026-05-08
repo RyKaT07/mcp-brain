@@ -62,7 +62,32 @@ class Embedder:
                     "`pip install -e .[embeddings]`."
                 ) from e
             logger.info("loading fastembed model: %s", self.model_name)
-            self._model = TextEmbedding(model_name=self.model_name)
+            # Cap ONNX runtime threads. Inside an LXC the kernel reports
+            # the host's full CPU count via /proc/cpuinfo, so onnxruntime
+            # spawns ~one thread per host core (often 128+) and immediately
+            # tries pthread_setaffinity_np against the container's cgroup
+            # cpuset, which fails with EINVAL for every thread that lands
+            # outside the allowed mask. Each failure logs an error line,
+            # the spawn storm starves the request loop, and panel calls
+            # to knowledge_graph stall indefinitely.
+            #
+            # ``threads`` keyword on TextEmbedding maps to
+            # SessionOptions.intra_op_num_threads. ``MCP_EMBED_THREADS``
+            # is the override hook for tuning per deployment.
+            try:
+                threads = int(os.getenv("MCP_EMBED_THREADS", "2"))
+            except ValueError:
+                threads = 2
+            try:
+                self._model = TextEmbedding(
+                    model_name=self.model_name,
+                    threads=threads,
+                )
+            except TypeError:
+                # Older fastembed versions don't accept the threads kwarg.
+                # Fall back to the default constructor and cap via env.
+                os.environ.setdefault("OMP_NUM_THREADS", str(threads))
+                self._model = TextEmbedding(model_name=self.model_name)
         return self._model
 
     def encode(self, texts: Iterable[str]) -> list[list[float]]:

@@ -202,6 +202,52 @@ class TestServiceWithFakeEmbedder:
         assert n == 2
         assert service._global_store.chunk_count() == 0
 
+    def test_audit_coherence_empty_store(self, service):
+        out = service.audit_coherence()
+        assert out["chunk_count"] == 0
+        assert out["low_coherence"] == []
+        assert out["duplicate_suspects"] == []
+
+    def test_audit_coherence_flags_orphan_chunks(self, service):
+        # Three files. The fake embedder is sha256-based so each
+        # distinct text maps to a deterministic point in [0,1)^8 with
+        # no clustering. With the default low_coherence_distance of
+        # 1.0 (cos≈0.5 on normalised vectors) and these random-ish
+        # vectors, none should fall under the threshold — every chunk
+        # has plenty of neighbours.
+        service.refresh_file("work", "a", "## A\nalpha content unique")
+        service.refresh_file("work", "b", "## B\nbeta content unique")
+        service.refresh_file("work", "c", "## C\ngamma content unique")
+        out = service.audit_coherence(low_coherence_distance=0.0)
+        # Threshold 0.0 forces every chunk to qualify as low-coherence
+        # since dist > 0 between distinct sha256 buckets.
+        assert out["chunk_count"] == 3
+        assert len(out["low_coherence"]) == 3
+
+    def test_audit_coherence_flags_cross_file_duplicates(self, service):
+        # Same text in two different files → identical fake embedding
+        # → distance 0. With duplicate_distance high enough they get
+        # flagged as a duplicate-suspect pair.
+        service.refresh_file("work", "a", "## Topic\nshared body")
+        service.refresh_file("homelab", "a", "## Topic\nshared body")
+        # Plus a non-duplicate so we know we filter intelligently.
+        service.refresh_file("school", "a", "## Topic\nunrelated body")
+        out = service.audit_coherence(duplicate_distance=0.01)
+        # Exactly one cross-file duplicate pair.
+        assert len(out["duplicate_suspects"]) == 1
+        pair = out["duplicate_suspects"][0]
+        scopes = sorted([pair["a"]["scope"], pair["b"]["scope"]])
+        assert scopes == ["homelab", "work"]
+
+    def test_audit_coherence_skips_same_file_pairs(self, service):
+        # Two chunks with identical text in the same file are not a
+        # cross-file duplicate, so the rule shouldn't fire.
+        service.refresh_file(
+            "work", "x", "## A\nshared body\n## B\nshared body"
+        )
+        out = service.audit_coherence(duplicate_distance=0.01)
+        assert out["duplicate_suspects"] == []
+
     def test_per_user_store_is_isolated(self, service, tmp_path: Path):
         # Same scope+project, different user_id → separate store.
         (tmp_path / "users" / "alice").mkdir(parents=True)
@@ -239,3 +285,150 @@ class TestServiceWithFakeEmbedder:
         again = svc.bootstrap()
         assert again["embedded"] == 0
         assert again["skipped"] == 2
+
+    def test_bootstrap_skips_users_dir_at_root(
+        self, tmp_path: Path, fake_embedder
+    ):
+        """Files under ``users/<uid>/`` must not be embedded into the
+        global store as if their parent were a regular scope. They
+        belong in per-user stores and ``bootstrap_all`` handles them.
+        """
+        from mcp_brain.embeddings.service import EmbeddingService
+
+        # One legit root-scope file.
+        root_scope = tmp_path / "homelab"
+        root_scope.mkdir()
+        (root_scope / "alpha.md").write_text("## A\nroot content")
+        # A multi-user vault where files live under users/<uid>/<scope>/.
+        # The OLD bootstrap globbed ``*/*.md`` and never matched these
+        # at depth 3. The new bootstrap explicitly skips ``users`` at
+        # the root level so ``bootstrap_all`` is the only path that
+        # embeds them.
+        users_alpha = tmp_path / "users" / "alice" / "work"
+        users_alpha.mkdir(parents=True)
+        (users_alpha / "deep.md").write_text("## A\nalice content")
+
+        svc = EmbeddingService(
+            knowledge_dir=tmp_path,
+            embedder=fake_embedder,
+            global_store_path=tmp_path / "embeddings.db",
+        )
+        stats = svc.bootstrap()
+        # Only the legit root-scope file is counted; ``users`` skipped.
+        assert stats["files"] == 1
+        assert stats["embedded"] == 1
+
+    def test_bootstrap_all_walks_root_and_each_user(
+        self, tmp_path: Path, fake_embedder
+    ):
+        """Multi-user setup: root vault + ``users/<uid>/`` vaults each
+        get their own bootstrap pass into the right store.
+        """
+        from mcp_brain.embeddings.service import EmbeddingService
+
+        # Root vault — Patryk's single-user knowledge.
+        (tmp_path / "homelab").mkdir()
+        (tmp_path / "homelab" / "alpha.md").write_text("## A\nroot")
+        # Two per-user vaults.
+        (tmp_path / "users" / "alice" / "work").mkdir(parents=True)
+        (tmp_path / "users" / "alice" / "work" / "a.md").write_text(
+            "## A\nalice"
+        )
+        (tmp_path / "users" / "bob" / "school").mkdir(parents=True)
+        (tmp_path / "users" / "bob" / "school" / "b.md").write_text(
+            "## B\nbob1"
+        )
+        (tmp_path / "users" / "bob" / "school" / "c.md").write_text(
+            "## C\nbob2"
+        )
+        # Hidden user dir is skipped (matches the `_`/`.` rule for scopes).
+        (tmp_path / "users" / "_internal" / "x").mkdir(parents=True)
+        (tmp_path / "users" / "_internal" / "x" / "x.md").write_text(
+            "## X\nignored"
+        )
+
+        svc = EmbeddingService(
+            knowledge_dir=tmp_path,
+            embedder=fake_embedder,
+            global_store_path=tmp_path / "embeddings.db",
+        )
+        stats = svc.bootstrap_all()
+        # Three keys: root + two real users.
+        assert set(stats) == {"root", "alice", "bob"}
+        assert stats["root"]["files"] == 1
+        assert stats["alice"]["files"] == 1
+        assert stats["bob"]["files"] == 2
+        # Per-user stores are isolated from the global one.
+        assert svc._global_store.chunk_count() == 1
+        assert svc.store_for("alice").chunk_count() == 1
+        assert svc.store_for("bob").chunk_count() == 2
+
+    def test_bootstrap_re_embeds_stale_file_modified_offline(
+        self, tmp_path: Path, fake_embedder
+    ):
+        """If a markdown file is edited while the brain is offline (manual
+        edit, git pull, Syncthing), the next bootstrap MUST detect the
+        per-chunk hash drift and re-embed the changed sections — not
+        skip the file because it already has chunks.
+        """
+        from mcp_brain.embeddings.service import EmbeddingService
+
+        scope = tmp_path / "homelab"
+        scope.mkdir()
+        target = scope / "alpha.md"
+        target.write_text("## A\noriginal content")
+
+        svc = EmbeddingService(
+            knowledge_dir=tmp_path,
+            embedder=fake_embedder,
+            global_store_path=tmp_path / "embeddings.db",
+        )
+        first = svc.bootstrap()
+        assert first["files"] == 1
+        assert first["embedded"] == 1
+        assert first["refreshed"] == 1
+        assert first["skipped"] == 0
+
+        # Mutate the file out-of-band, then bootstrap again.
+        target.write_text("## A\ncompletely different body")
+        second = svc.bootstrap()
+
+        assert second["files"] == 1
+        # The content_hash changed → the chunk must be re-embedded.
+        assert second["embedded"] == 1
+        assert second["refreshed"] == 1
+        assert second["skipped"] == 0
+
+        # And a third pass with no changes is a true no-op again.
+        third = svc.bootstrap()
+        assert third["embedded"] == 0
+        assert third["skipped"] == 1
+        assert third["refreshed"] == 0
+
+    def test_bootstrap_drops_chunks_for_removed_section(
+        self, tmp_path: Path, fake_embedder
+    ):
+        """A section deleted from the file while the brain was offline
+        must have its chunks removed by bootstrap, not orphaned."""
+        from mcp_brain.embeddings.service import EmbeddingService
+
+        scope = tmp_path / "homelab"
+        scope.mkdir()
+        target = scope / "alpha.md"
+        target.write_text("## A\nfirst\n\n## B\nsecond")
+
+        svc = EmbeddingService(
+            knowledge_dir=tmp_path,
+            embedder=fake_embedder,
+            global_store_path=tmp_path / "embeddings.db",
+        )
+        svc.bootstrap()
+        store = svc._global_store
+        assert store.chunk_count() == 2
+
+        # Delete section B out-of-band.
+        target.write_text("## A\nfirst")
+        stats = svc.bootstrap()
+        assert stats["refreshed"] == 1
+        assert stats["embedded"] == 0  # A unchanged
+        assert store.chunk_count() == 1
