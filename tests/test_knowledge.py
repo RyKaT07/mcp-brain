@@ -233,9 +233,16 @@ class TestGitCommit:
         add_cmd = mock_run.call_args_list[0][0][0]
         commit_cmd = mock_run.call_args_list[1][0][0]
         assert add_cmd[0] == "git"
-        assert add_cmd[1] == "add"
+        # ``-c safe.directory=*`` MUST come before the subcommand on
+        # both calls. Without it, git refuses to operate on a repo whose
+        # working-tree owner differs from the running uid (multi-tenant
+        # vault on bind-mounted volumes), and the auto-commit silently
+        # fails — the bug that motivated this assertion.
+        assert add_cmd[1:3] == ["-c", "safe.directory=*"]
+        assert add_cmd[3] == "add"
         assert commit_cmd[0] == "git"
-        assert commit_cmd[1] == "commit"
+        assert commit_cmd[1:3] == ["-c", "safe.directory=*"]
+        assert commit_cmd[3] == "commit"
 
     def test_git_add_failure_skips_commit(self, tmp_path):
         filepath = tmp_path / "notes.md"
@@ -278,6 +285,39 @@ class TestGitCommit:
         with patch("subprocess.run", side_effect=FileNotFoundError("git not found")):
             # Should not raise — stdio dev mode without git binary
             _git_commit(tmp_path, filepath, "test: update notes")
+
+    def test_safe_directory_star_passed_to_both_subcommands(self, tmp_path):
+        """Regression: prod brain leaked silent commit failures because
+        ``_git_commit`` did not pass ``-c safe.directory=*`` to git, so
+        any vault whose working-tree ownership drifted from the brain
+        process uid (panel-created files vs mcpbrain) tripped 'detected
+        dubious ownership' and aborted the auto-commit.
+
+        Read paths (knowledge_history / knowledge_timeline) had the flag
+        all along, so reads kept working — that's why the bug stayed
+        invisible to anyone watching timeline output.
+        """
+        filepath = tmp_path / "homelab" / "x.md"
+        filepath.parent.mkdir()
+        filepath.touch()
+
+        with patch("subprocess.run") as mock_run:
+            mock_add = MagicMock()
+            mock_add.returncode = 0
+            mock_commit = MagicMock()
+            mock_commit.returncode = 0
+            mock_run.side_effect = [mock_add, mock_commit]
+
+            _git_commit(tmp_path, filepath, "test: ownership probe")
+
+        for call in mock_run.call_args_list:
+            cmd = call[0][0]
+            # Every git invocation _git_commit makes MUST be safe-dir
+            # protected. Position is fixed: ['git', '-c',
+            # 'safe.directory=*', <subcommand>, ...].
+            assert cmd[0] == "git", cmd
+            assert cmd[1] == "-c", cmd
+            assert cmd[2] == "safe.directory=*", cmd
 
 
 # ---------------------------------------------------------------------------
