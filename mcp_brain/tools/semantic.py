@@ -43,11 +43,17 @@ def register_semantic_tools(
         limit: int = 10,
         scope: str | None = None,
     ) -> str:
-        """Find knowledge chunks that match the query by semantic similarity.
+        """DEPRECATED: use `knowledge_search(query, mode='semantic')` instead.
 
-        Unlike ``knowledge_search`` (BM25 full-text), this tool uses
-        sentence embeddings to find chunks whose *meaning* matches the
-        query — so "what laptop did I buy" can find the chunk titled
+        Kept registered so existing clients (saved Custom Connectors,
+        long-lived sessions) keep working. The hybrid default of the
+        unified `knowledge_search` will outperform pure semantic for
+        most queries — switch unless you specifically need the
+        pure-vector behaviour.
+
+        Find knowledge chunks that match the query by semantic similarity.
+        Uses sentence embeddings to find chunks whose *meaning* matches
+        the query — so "what laptop did I buy" can find the chunk titled
         "Hardware purchases" even without the literal word "laptop".
 
         Args:

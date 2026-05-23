@@ -243,6 +243,77 @@ def _build_knowledge_update_description(tool_policy: str) -> str:
     return f"{tool_policy.strip()}\n\n---\n\n{_KNOWLEDGE_UPDATE_BASE_DESCRIPTION}"
 
 
+_RELATED_QUERY_BODY_CHARS = 400
+
+
+def _build_related_query(label: str, body: str) -> str:
+    """Build the semantic-search query used for the auto-related block.
+
+    Concatenates the file/section label (so the heading itself carries
+    weight) with the leading prose of the body. Keeping the query short
+    is intentional — sentence-transformer embeddings flatten longer
+    inputs anyway, and a focused query gives sharper neighbours.
+    """
+    snippet = (body or "").strip()
+    if len(snippet) > _RELATED_QUERY_BODY_CHARS:
+        snippet = snippet[:_RELATED_QUERY_BODY_CHARS].rstrip() + "…"
+    return f"{label}\n\n{snippet}" if snippet else label
+
+
+def _find_related(
+    embedding_service,
+    query: str,
+    *,
+    exclude_scope: str,
+    exclude_project: str,
+    limit: int = 3,
+) -> str:
+    """Return a markdown "Related" block, or empty string when nothing matches.
+
+    Permission filtering reuses ``allowed_subscopes('knowledge:read')`` so
+    we never surface chunks from off-limits scopes.
+    """
+    allowed = allowed_subscopes("knowledge:read")
+    if allowed is ALL:
+        allowed_scopes_filter: set[str] | None = None
+    elif allowed:
+        allowed_scopes_filter = set(allowed)
+    else:
+        return ""
+
+    user_id = get_current_user_id()
+    try:
+        hits = embedding_service.search(
+            query,
+            k=limit + 5,  # pull extra so the same-file dedupe still leaves matches
+            allowed_scopes=allowed_scopes_filter,
+            user_id=user_id,
+        )
+    except Exception as exc:
+        # Embedding failures must never break the read path.
+        logger.warning("auto-related search failed: %s", exc)
+        return ""
+
+    filtered: list[dict] = []
+    for h in hits:
+        if h["scope"] == exclude_scope and h["project"] == exclude_project:
+            continue
+        filtered.append(h)
+        if len(filtered) >= limit:
+            break
+
+    if not filtered:
+        return ""
+
+    lines = ["## Related", "<!-- top semantic matches from other knowledge files -->"]
+    for h in filtered:
+        lines.append(
+            f"- `{h['scope']}/{h['project']}` § {h['heading_path']} "
+            f"(distance {h['distance']:.3f})"
+        )
+    return "\n".join(lines)
+
+
 def register_knowledge_tools(
     mcp: FastMCP,
     knowledge_dir: Path,
@@ -266,13 +337,28 @@ def register_knowledge_tools(
     update_description = _build_knowledge_update_description(tool_policy)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
-    def knowledge_read(scope: str, project: str, section: str | None = None) -> str:
+    def knowledge_read(
+        scope: str,
+        project: str,
+        section: str | None = None,
+        include_related: bool = True,
+    ) -> str:
         """Read a knowledge file or a specific section.
+
+        When ``include_related`` is true and the embedding service is
+        available, the response is appended with a "Related" block
+        listing the top 3 semantically similar chunks from *other*
+        knowledge files. This gives the caller adjacent context without
+        a second tool call — useful for autonomous clients that can't
+        fan out queries on their own (Claude.ai web, ChatGPT, etc.).
 
         Args:
             scope: Category — 'work', 'school', or 'homelab'
             project: Project/topic name (filename without .md)
             section: Optional H2 section title. If omitted, returns full file.
+            include_related: Append a "Related" block with the top 3
+                semantic matches from other files. Default True.
+                Set False for raw reads when you only want the file.
         """
         meter_call("knowledge_read")
         try:
@@ -303,12 +389,28 @@ def register_knowledge_tools(
         )
 
         if section is None:
-            return f"{provenance}\n{content}"
+            body = f"{provenance}\n{content}"
+            query_text = _build_related_query(project, content)
+        else:
+            sections = _parse_sections(content)
+            if section not in sections:
+                return f"Section '{section}' not found. Available: {', '.join(s for s in sections if s != '_preamble')}"
+            section_body = sections[section]
+            body = f"{provenance}\n## {section}\n{section_body}"
+            query_text = _build_related_query(f"{project} § {section}", section_body)
 
-        sections = _parse_sections(content)
-        if section in sections:
-            return f"{provenance}\n## {section}\n{sections[section]}"
-        return f"Section '{section}' not found. Available: {', '.join(s for s in sections if s != '_preamble')}"
+        if include_related and embedding_service is not None:
+            related = _find_related(
+                embedding_service,
+                query_text,
+                exclude_scope=scope,
+                exclude_project=project,
+                limit=3,
+            )
+            if related:
+                body = f"{body}\n\n{related}"
+
+        return body
 
     @mcp.tool(description=update_description, annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     def knowledge_update(scope: str, project: str, section: str, content: str) -> str:

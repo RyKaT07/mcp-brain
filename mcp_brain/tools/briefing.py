@@ -34,6 +34,100 @@ def _sanitize_meta_value(v: object) -> str:
     return str(v).replace("\n", " ").replace("\r", "").strip()
 
 
+def _recent_edits(knowledge_dir: Path, allowed_knowledge_scopes, limit: int = 5) -> str:
+    """Return a short markdown block with the N most recent knowledge edits.
+
+    Returns an empty string when git isn't available, the repo has no
+    history, or the caller has no readable scopes. Permission filtering
+    is enforced via git pathspecs so off-limits scopes never leak into
+    the output.
+    """
+    if not knowledge_dir.exists():
+        return ""
+
+    if allowed_knowledge_scopes is ALL:
+        pathspecs: list[str] = []
+    elif allowed_knowledge_scopes:
+        pathspecs = sorted(allowed_knowledge_scopes)
+    else:
+        return ""
+
+    cmd = [
+        "git",
+        "-c",
+        "safe.directory=*",
+        "log",
+        f"-{int(limit)}",
+        "--format=%h\t%ar\t%s",
+    ]
+    if pathspecs:
+        cmd.append("--")
+        cmd.extend(pathspecs)
+
+    try:
+        result = subprocess.run(
+            cmd, cwd=knowledge_dir, capture_output=True, text=True, check=True
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return ""
+
+    raw = result.stdout.strip()
+    if not raw:
+        return ""
+
+    lines = ["## Recent edits"]
+    for line in raw.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) < 3:
+            continue
+        sha, age, subject = parts
+        lines.append(f"- `{sha}` · {age} · {subject}")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def _inbox_summary(knowledge_dir: Path, max_preview: int = 3) -> str:
+    """Return a markdown block summarising pending inbox items.
+
+    Empty string when the inbox is empty, the directory doesn't exist,
+    or the caller lacks ``inbox:read`` permission.
+    """
+    try:
+        require("inbox:read")
+    except PermissionDenied:
+        return ""
+
+    inbox = knowledge_dir / "inbox"
+    if not inbox.exists():
+        return ""
+
+    pending: list[dict] = []
+    # Newest first — mirrors inbox_list. We only need a few summaries
+    # plus the total count, so we stop early once we have enough.
+    for f in sorted(inbox.glob("*.yaml"), reverse=True):
+        if f.parent.name == "_archive":
+            continue
+        try:
+            data = yaml.safe_load(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict) or data.get("status") != "pending":
+            continue
+        pending.append(data)
+
+    if not pending:
+        return ""
+
+    lines = [f"## Inbox ({len(pending)} pending)"]
+    for item in pending[:max_preview]:
+        summary = _sanitize_meta_value(item.get("summary", "no summary"))
+        source = item.get("source", "?")
+        item_id = item.get("id", "?")
+        lines.append(f"- `{item_id}` · {source} · {summary}")
+    if len(pending) > max_preview:
+        lines.append(f"- …and {len(pending) - max_preview} more")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # BriefingConfig
 
@@ -405,6 +499,20 @@ def register_briefing_tools(
 
         meta = yaml.safe_load(meta_path.read_text(encoding="utf-8"))
 
+        # The recent-edits and inbox blocks are appended to whichever
+        # briefing path runs below. Both respect the caller's permissions:
+        # edits filter by readable knowledge scopes, inbox requires
+        # inbox:read. Empty when nothing to show.
+        allowed_knowledge = allowed_subscopes("knowledge:read")
+        recent_block = _recent_edits(knowledge_dir, allowed_knowledge)
+        inbox_block = _inbox_summary(knowledge_dir)
+
+        def _append_activity(text: str) -> str:
+            extras = [b for b in (recent_block, inbox_block) if b]
+            if not extras:
+                return text
+            return text.rstrip() + "\n\n" + "\n\n".join(extras) + "\n"
+
         # -- Live briefing (when config is present) --------------------------
         config = _parse_briefing_config(meta, scope)
         if config is not None and config.enabled:
@@ -422,7 +530,7 @@ def register_briefing_tools(
                 trello_api_key=trello_api_key,
                 trello_api_token=trello_api_token,
             )
-            return header + "\n" + body
+            return _append_activity(header + "\n" + body)
 
         # -- Static fallback (original behavior) -----------------------------
         parts: list[str] = []
@@ -466,4 +574,4 @@ def register_briefing_tools(
                         parts.append(f"- {f.stem}")
                     parts.append("")
 
-        return "\n".join(parts)
+        return _append_activity("\n".join(parts))
