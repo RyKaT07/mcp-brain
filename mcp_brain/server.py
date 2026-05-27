@@ -468,7 +468,7 @@ def _build_mcp() -> FastMCP:
             gcal_creds["GOOGLE_CLIENT_SECRET"],
             gcal_creds["GOOGLE_REFRESH_TOKEN"],
         )
-    register_search_tools(mcp, KNOWLEDGE_DIR, search_index)
+    register_search_tools(mcp, KNOWLEDGE_DIR, search_index, embedding_service)
     register_graph_tools(mcp, KNOWLEDGE_DIR, rel_graph)
     register_knowledge_graph_tool(mcp, KNOWLEDGE_DIR, rel_graph, embedding_service)
     register_layout_tools(mcp, KNOWLEDGE_DIR, rel_graph)

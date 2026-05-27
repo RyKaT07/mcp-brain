@@ -163,7 +163,7 @@ def _build_worker_mcp():
     register_meta_tools(mcp, KNOWLEDGE_DIR)
     register_inbox_tools(mcp, KNOWLEDGE_DIR)
     register_briefing_tools(mcp, KNOWLEDGE_DIR)
-    register_search_tools(mcp, KNOWLEDGE_DIR, search_index)
+    register_search_tools(mcp, KNOWLEDGE_DIR, search_index, embedding_service)
     register_graph_tools(mcp, KNOWLEDGE_DIR, rel_graph)
     register_knowledge_graph_tool(mcp, KNOWLEDGE_DIR, rel_graph, embedding_service)
     register_layout_tools(mcp, KNOWLEDGE_DIR, rel_graph)
