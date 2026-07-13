@@ -103,6 +103,20 @@ class TestSearchReturnsRankedResults:
         assert results[0]["scope"] == "school"
         assert results[0]["project"] == "notes"
 
+    def test_query_with_fts5_syntax_chars_falls_back(self, tmp_path):
+        _make_md(tmp_path, "school", "notes", "## Overview\n\nElectronics and gates.\n")
+
+        idx = SearchIndex()
+        idx.build(tmp_path)
+
+        # "?" and a dangling "-" are FTS5 syntax errors in a raw query;
+        # the escaped retry must still find the row.
+        results = idx.search("what about electronics?", None)
+        assert len(results) >= 1
+        assert results[0]["project"] == "notes"
+
+        assert idx.search("electronics -", None)
+
     def test_bm25_higher_relevance_ranked_first(self, tmp_path):
         # "gate driver" appears more densely in school/hw than work/notes
         _make_md(

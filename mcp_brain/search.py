@@ -24,6 +24,18 @@ logger = logging.getLogger(__name__)
 
 _SKIP_DIRS = {"_meta", "inbox", ".git", "users"}
 
+
+def _fts5_escape(query: str) -> str:
+    """Neutralize FTS5 operators by double-quoting every token.
+
+    Loses phrase/NEAR/boolean syntax on purpose — used only as a retry
+    after the raw query failed to parse. Tokens are OR-ed so a
+    natural-language query still matches documents containing only its
+    salient words; BM25 ranking handles relevance.
+    """
+    tokens = [t.replace('"', '""') for t in query.split()]
+    return " OR ".join(f'"{t}"' for t in tokens)
+
 # Bump this whenever the index schema or the parsing/extraction code
 # changes in a way that makes previously-persisted rows incorrect or
 # inconsistent.  On mismatch the on-disk DB is wiped and rebuilt on the
@@ -470,9 +482,17 @@ class SearchIndex:
             try:
                 cursor = self._conn.execute(sql, params)
                 rows = cursor.fetchall()
-            except sqlite3.OperationalError as exc:
-                logger.warning("search.search: query error: %s", exc)
-                return []
+            except sqlite3.OperationalError:
+                # Natural-language queries often contain FTS5 syntax
+                # characters ("?", "-", ":"). Retry with every token
+                # quoted, which disables all FTS5 operators.
+                params[0] = _fts5_escape(query)
+                try:
+                    cursor = self._conn.execute(sql, params)
+                    rows = cursor.fetchall()
+                except sqlite3.OperationalError as exc:
+                    logger.warning("search.search: query error: %s", exc)
+                    return []
 
         return [
             {
