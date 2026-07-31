@@ -570,6 +570,17 @@ def main():
     import logging as _logging
     _startup_log = _logging.getLogger(__name__)
 
+    # The tool-call audit log (one JSON record per tool call, emitted at
+    # INFO by MCPLoggingMiddleware) is dropped by the default WARNING
+    # root level unless it gets its own handler.
+    _tool_log = _logging.getLogger("mcp_brain.tool_call")
+    if not _tool_log.handlers:
+        _handler = _logging.StreamHandler()
+        _handler.setFormatter(_logging.Formatter("%(message)s"))
+        _tool_log.addHandler(_handler)
+        _tool_log.setLevel(_logging.INFO)
+        _tool_log.propagate = False
+
     if ISOLATION_MODE == "bwrap":
         from mcp_brain.isolation.entrypoint import main as isolation_main
         isolation_main()
